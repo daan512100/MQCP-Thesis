@@ -1,4 +1,5 @@
 # pyproject.toml
+
 [build-system]
 requires = ["maturin>=1.4,<2.0"]
 build-backend = "maturin"
@@ -6,9 +7,11 @@ build-backend = "maturin"
 [project]
 name = "tsqc"
 dynamic = ["version"]
+# If you prefer a static version, replace the above with:
+# version = "0.1.0"
 
 authors = [
-    {name = "Daan Starre", email = "daan.starre@example.com"}
+    {name = "Daan Starre", email = "daan.starre@example.com"},
 ]
 
 classifiers = [
@@ -17,15 +20,22 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 
-# OPTIONEEL MAAR AANBEVOLEN: Definieer een commando voor de runner
+# **Nieuwe sectie**: Python dependencies
+# - typer (met extras) voor de CLI
+# - toml voor configuratie‐fallback op Python < 3.11
+dependencies = [
+    "typer[all]>=0.8.0",
+    "toml>=0.10.2",
+]
+
+# Console‐script entrypoint naar de Typer-app
 [project.scripts]
-tsqc = "tsqc.runner:main"
+tsqc = "tsqc.cli:app"
 
 [tool.maturin]
-# Vertel maturin expliciet hoe de native module moet heten.
+# Naam van de PyO3-extensiemodule
 module-name = "tsqc._native"
-
-# DIT IS DE CRUCIALE FIX: Vertel maturin waar de Python-broncode staat.
+# Geef aan waar de Python-broncode staat
 python-source = "src"
-
+# Rust‐features om te activeren
 features = ["pyo3/extension-module", "parallel_mcts"]

@@ -16,6 +16,7 @@ pub mod params;
 pub mod restart;
 pub mod solution;
 pub mod tabu;
+pub mod freq;
 
 // Her-exporteer de belangrijkste types voor Rust-gebruikers
 pub use graph::Graph;

@@ -1,24 +1,34 @@
-//! src/diversify.rs
+// Bestand: src/diversify.rs
 //!
 //! Implementeert de adaptieve diversificatiemechanismen (zware en milde perturbaties)
-//! voor TSQC, zoals beschreven in `ScriptiePaper.pdf`, Sectie 3.4.2.
+//! voor TSQC, zoals beschreven in `ScriptiePaper.pdf`, Sectie 3.4.2.
+//! Gebruikt long-term frequentiegeheugen via `add_counted`/`remove_counted` (Sectie 3.5).
 
-use crate::{params::Params, solution::Solution, tabu::DualTabu};
+use crate::{
+    params::Params,
+    solution::Solution,
+    tabu::DualTabu,
+    freq::{add_counted, remove_counted},
+};
 use rand::seq::SliceRandom;
 use rand::Rng;
+use bitvec::slice::BitSlice;
 
-/// Private helper-functie om de handmatige intersectie-telling uit te voeren.
-/// Dit is de centrale oplossing voor de E0369-compilerfout.
-fn count_intersecting_ones(a: &bitvec::slice::BitSlice, b: &bitvec::slice::BitSlice) -> usize {
-    a.iter().by_vals().zip(b.iter().by_vals()).filter(|&(x, y)| x && y).count()
+/// Handmatige intersectie-telling voor verbindingen tussen v en S.
+fn count_intersecting_ones(a: &BitSlice, b: &BitSlice) -> usize {
+    a.iter().by_vals()
+        .zip(b.iter().by_vals())
+        .filter(|&(x, y)| x && y)
+        .count()
 }
 
 /// Zware perturbatie ("grote schok"):
-/// 1. Verwijder een willekeurige knoop `u` ∈ S.
-/// 2. Bereken de drempel `h` volgens de *gecorrigeerde* formule uit het paper.
-/// 3. Verzamel buitenstaanders `v` ∉ S met `deg_in(v) < h`.
-/// 4. Voeg een willekeurig gekozen `v` toe.
-/// 5. Werk frequentiegeheugen en tabu-lijsten bij.
+/// 1. Verwijder willekeurige u ∈ S.
+/// 2. Bereken drempel h = floor(0.85 * γ * k) als dn ≤ 0.5, anders floor(γ * k).
+/// 3. Kies v ∉ S met |N(v) ∩ S| ≤ h.
+/// 4. Voeg v toe.
+/// 5. Update long-term freq via helper.
+/// 6. Reset tabu en update tenures.
 pub fn heavy_perturbation<'g, R>(
     sol: &mut Solution<'g>,
     tabu: &mut DualTabu,
@@ -34,62 +44,63 @@ pub fn heavy_perturbation<'g, R>(
     }
 
     // 1. Kies en verwijder een willekeurige u ∈ S.
-    let u = *sol.bitset().iter_ones().collect::<Vec<_>>().choose(rng)
-       .expect("Oplossing moet niet-leeg zijn");
-    sol.remove(u);
+    let u = *sol
+        .bitset()
+        .iter_ones()
+        .collect::<Vec<_>>()
+        .choose(rng)
+        .expect("Oplossing moet niet-leeg zijn");
+    remove_counted(sol, u, freq);
 
-    // 2. Bereken drempel `h` volgens de gecorrigeerde formule (oplossing voor TSQC-02).
-    // Formule: h = ceil(0.85*gamma*k) als Dn <= 0.5, anders h = ceil(gamma*k).
+    // 2. Bereken de drempel h volgens gepaste formule.
     let graph = sol.graph();
-    let dn = if graph.n() < 2 { 0.0 } else { 2.0 * graph.m() as f64 / (graph.n() * (graph.n() - 1)) as f64 };
-    let h = if dn <= 0.5 {
-        (0.85 * p.gamma_target * k as f64).ceil() as usize
+    let dn = if graph.n() < 2 {
+        0.0
     } else {
-        (p.gamma_target * k as f64).ceil() as usize
+        2.0 * graph.m() as f64 / ((graph.n() * (graph.n() - 1)) as f64)
+    };
+    let h = if dn <= 0.5 {
+        (0.85 * p.gamma_target * (k as f64)).floor() as usize
+    } else {
+        (p.gamma_target * (k as f64)).floor() as usize
     };
 
-    // 3. Verzamel kandidaten voor toevoeging.
+    // 3. Verzamel kandidaten v ∉ S met |N(v) ∩ S| ≤ h.
     let sol_bitset = sol.bitset();
     let mut candidates: Vec<usize> = (0..graph.n())
-       .filter(|&v| !sol_bitset[v] && count_intersecting_ones(graph.neigh_row(v), sol_bitset) < h)
-       .collect();
+        .filter(|&v| !sol_bitset[v]
+            && count_intersecting_ones(graph.neigh_row(v), sol_bitset) <= h)
+        .collect();
 
-    // Fallback: als geen enkele knoop < h, neem dan de knopen met de minimale graad.
+    // Fallback: als geen kandidaten, kies v met minimale out-degree.
     if candidates.is_empty() {
         let min_deg_out = (0..graph.n())
-           .filter(|&v| !sol_bitset[v])
-           .map(|v| count_intersecting_ones(graph.neigh_row(v), sol_bitset))
-           .min().unwrap_or(0);
+            .filter(|&v| !sol_bitset[v])
+            .map(|v| count_intersecting_ones(graph.neigh_row(v), sol_bitset))
+            .min()
+            .unwrap_or(0);
         candidates = (0..graph.n())
-           .filter(|&v| !sol_bitset[v] && count_intersecting_ones(graph.neigh_row(v), sol_bitset) == min_deg_out)
-           .collect();
+            .filter(|&v| !sol_bitset[v]
+                && count_intersecting_ones(graph.neigh_row(v), sol_bitset) == min_deg_out)
+            .collect();
     }
 
-    // 4. Voeg een willekeurige kandidaat `v` toe.
+    // 4. Voeg willekeurige kandidaat v toe en update freq.
     if let Some(&v) = candidates.choose(rng) {
-        sol.add(v);
-
-        // 5. Werk frequentiegeheugen bij.
-        freq[u] = freq[u].saturating_add(1);
-        freq[v] = freq[v].saturating_add(1);
-        // Frequentiegeheugen resetten (zoals in het originele paper)
-        if freq.iter().any(|&f| f > k) {
-            freq.fill(0);
-        }
-    } else {
-        // Geen buitenstaanders gevonden, voeg u terug toe om de grootte te herstellen.
-        sol.add(u);
+        add_counted(sol, v, freq);
     }
 
-    // 6. Reset tabu en werk duren bij.
+    // 5. Reset tabu en update tenures.
     tabu.reset();
     tabu.update_tenures(sol.size(), sol.edges(), p.gamma_target, rng);
 }
 
 /// Milde perturbatie ("kleine schok"):
-/// 1. Bouw kritieke sets A (u ∈ S met minimale `deg_in`) en B (v ∉ S met maximale `deg_in`).
-/// 2. Wissel een willekeurige `u` ∈ A en `v` ∈ B.
-/// 3. Werk frequentiegeheugen en tabu-lijsten bij.
+/// 1. Bereken MinIn en MaxOut over S en V\S.
+/// 2. Kies u ∈ S met |N(u) ∩ S| = MinIn, v ∉ S met |N(v) ∩ S| = MaxOut.
+/// 3. Verwissel u en v.
+/// 4. Update long-term freq.
+/// 5. Reset tabu en update tenures.
 pub fn mild_perturbation<'g, R>(
     sol: &mut Solution<'g>,
     tabu: &mut DualTabu,
@@ -99,43 +110,43 @@ pub fn mild_perturbation<'g, R>(
 ) where
     R: Rng + ?Sized,
 {
+    let graph = sol.graph();
     let k = sol.size();
-    if k == 0 {
+    if k < 2 {
         return;
     }
-    let graph = sol.graph();
+
     let sol_bitset = sol.bitset();
 
-    // 1. Bouw kritieke sets A en B.
-    let min_in = sol_bitset.iter_ones()
-       .map(|u| count_intersecting_ones(graph.neigh_row(u), sol_bitset))
-       .min().unwrap_or(0);
-    let set_a: Vec<usize> = sol_bitset.iter_ones()
-       .filter(|&u| count_intersecting_ones(graph.neigh_row(u), sol_bitset) == min_in)
-       .collect();
-
+    // 1. Bereken kritieke graden.
+    let min_in = sol_bitset
+        .iter_ones()
+        .map(|u| count_intersecting_ones(graph.neigh_row(u), sol_bitset))
+        .min()
+        .unwrap_or(usize::MAX);
     let max_out = (0..graph.n())
-       .filter(|&v| !sol_bitset[v])
-       .map(|v| count_intersecting_ones(graph.neigh_row(v), sol_bitset))
-       .max().unwrap_or(0);
+        .filter(|&v| !sol_bitset[v])
+        .map(|v| count_intersecting_ones(graph.neigh_row(v), sol_bitset))
+        .max()
+        .unwrap_or(usize::MIN);
+
+    // 2. Bouw kritieke sets.
+    let set_a: Vec<usize> = sol_bitset
+        .iter_ones()
+        .filter(|&u| count_intersecting_ones(graph.neigh_row(u), sol_bitset) == min_in)
+        .collect();
     let set_b: Vec<usize> = (0..graph.n())
-       .filter(|&v| !sol_bitset[v] && count_intersecting_ones(graph.neigh_row(v), sol_bitset) == max_out)
-       .collect();
+        .filter(|&v| !sol_bitset[v]
+            && count_intersecting_ones(graph.neigh_row(v), sol_bitset) == max_out)
+        .collect();
 
-    // 2. Wissel willekeurige u ∈ A en v ∈ B.
+    // 3. Kies en verwissel.
     if let (Some(&u), Some(&v)) = (set_a.choose(rng), set_b.choose(rng)) {
-        sol.remove(u);
-        sol.add(v);
-
-        // 3. Werk frequentiegeheugen bij.
-        freq[u] = freq[u].saturating_add(1);
-        freq[v] = freq[v].saturating_add(1);
-        if freq.iter().any(|&f| f > k) {
-            freq.fill(0);
-        }
+        remove_counted(sol, u, freq);
+        add_counted(sol, v, freq);
     }
 
-    // 4. Reset tabu en werk duren bij.
+    // 4. Reset tabu en update tenures.
     tabu.reset();
     tabu.update_tenures(sol.size(), sol.edges(), p.gamma_target, rng);
 }

@@ -1,30 +1,29 @@
-//! src/neighbour.rs
+// Bestand: src/neighbour.rs
 //!
 //! Implementeert de intensificatiestap (één-swap lokale zoektocht) voor TSQC,
-//! zoals beschreven in `ScriptiePaper.pdf`, Sectie 3.4.1.
+//! met Δ_uv-correctie (d(v) − d(u) − e_uv) en long-term frequentiegeheugen (Secties 3.4.1 & 3.5).
 
-use crate::{params::Params, solution::Solution, tabu::DualTabu};
+use crate::{
+    graph::Graph,
+    params::Params,
+    solution::Solution,
+    tabu::DualTabu,
+    freq::{remove_counted, add_counted},
+};
 use rand::Rng;
+use bitvec::slice::BitSlice;
 
-/// Private helper-functie om de handmatige intersectie-telling uit te voeren.
-/// Dit is de centrale oplossing voor de E0369-compilerfout.
-fn count_intersecting_ones(a: &bitvec::slice::BitSlice, b: &bitvec::slice::BitSlice) -> usize {
-    a.iter().by_vals().zip(b.iter().by_vals()).filter(|&(x, y)| x && y).count()
+/// Handmatige intersectie-telling voor verbindingen tussen v en S.
+/// Dit omzeilt de E0369-compilerfout.
+fn count_intersecting_ones(a: &BitSlice, b: &BitSlice) -> usize {
+    a.iter().by_vals()
+        .zip(b.iter().by_vals())
+        .filter(|&(x, y)| x && y)
+        .count()
 }
 
-/// Probeert een enkele intensificatiezet uit te voeren.
-///
-/// Deze functie implementeert de gecorrigeerde en volledige logica:
-/// 1. Berekent `MinInS` en `MaxOutS` op basis van *niet-taboe* knopen (oplossing voor `TSQC-05`).
-/// 2. Bouwt kritieke sets A en B.
-/// 3. Evalueert alle swaps (u∈A, v∈B) en selecteert de beste volgens de hiërarchie
-///    uit het paper: eerst verbeterend, dan niet-verslechterend, dan aspiratie.
-/// 4. Voert de swap uit, werkt frequentiegeheugen en tabu-lijsten bij.
-///
-/// - `best_global_rho`: beste dichtheid tot nu toe (voor aspiratiecriterium).
-/// - `freq`: lange-termijn frequentiegeheugen.
-///
-/// Geeft `true` terug als er een swap is uitgevoerd.
+/// Probeert één intensificatie-swap (u ∈ A, v ∈ B) uit te voeren.
+/// Returns `true` als er geswapped is.
 pub fn improve_once<'g, R>(
     sol: &mut Solution<'g>,
     tabu: &mut DualTabu,
@@ -44,52 +43,46 @@ where
         return false;
     }
 
-    // --- Correctie voor TSQC-05: Bereken MinInS en MaxOutS over niet-taboe knopen ---
+    // Bereken MinInS en MaxOutS over niet-taboe knopen
     let (min_in, max_out) = calculate_critical_degrees(sol, tabu);
     if min_in == usize::MAX || max_out == usize::MIN {
-        // Geen geldige zetten mogelijk
         tabu.step();
         tabu.update_tenures(sol.size(), sol.edges(), p.gamma_target, rng);
         return false;
     }
 
-    // Bouw kritieke sets A en B op basis van de correct berekende graden
+    // Bouw kritieke sets A en B
     let (set_a, set_b) = build_critical_sets(sol, tabu, min_in, max_out);
-    
-    // --- Zoek de beste swap volgens de hiërarchie van het paper ---
-    let mut best_allowed: Option<(isize, usize, usize)> = None; // (delta, u, v)
-    let mut best_aspire: Option<(isize, usize, usize)> = None;
 
     let current_edges = sol.edges();
     let sol_bitset = sol.bitset();
+
+    let mut best_allowed: Option<(isize, usize, usize)> = None;
+    let mut best_aspire: Option<(isize, usize, usize)> = None;
+
     for &u in &set_a {
-        // De verandering in het aantal kanten is `gain - loss`.
-        // `loss` is het aantal buren van `u` binnen de huidige oplossing `S`.
         let loss = count_intersecting_ones(graph.neigh_row(u), sol_bitset);
         for &v in &set_b {
-            // `gain` is het aantal buren van `v` binnen de huidige oplossing `S`.
             let gain = count_intersecting_ones(graph.neigh_row(v), sol_bitset);
-            
-            // De totale verandering in kanten (delta) bij het swappen van u en v is
-            // `gain - loss`. Als u en v buren zijn, wordt die kant niet meegeteld
-            // in de interne graden, maar de kant gaat ook niet verloren, dus de
-            // formule is correct.
-            let delta = gain as isize - loss as isize;
+            // Δ_uv = d(v) − d(u) − e_uv
+            let e_uv = if graph.neigh_row(u)[v] { 1 } else { 0 };
+            let delta = gain as isize - loss as isize - e_uv as isize;
 
             let is_tabu = tabu.is_tabu_u(u) || tabu.is_tabu_v(v);
-
             if !is_tabu {
-                // Vergelijk met de beste toegestane zet tot nu toe
-                if best_allowed.is_none() || delta >= best_allowed.unwrap().0 {
+                if best_allowed.is_none() || delta > best_allowed.unwrap().0 {
                     best_allowed = Some((delta, u, v));
                 }
             } else {
-                // Controleer aspiratiecriterium: leidt de zet tot een betere oplossing dan de globale beste?
+                // Aspiratie: accepteer taboe-move als dichtheid verbetert
                 let new_edges = (current_edges as isize + delta) as usize;
-                let new_rho = Solution::calculate_density(k, new_edges);
+                let new_rho = if k < 2 {
+                    0.0
+                } else {
+                    2.0 * (new_edges as f64) / ((k * (k - 1)) as f64)
+                };
                 if new_rho > best_global_rho {
-                    // Vergelijk met de beste aspiratiezet tot nu toe
-                    if best_aspire.is_none() || delta >= best_aspire.unwrap().0 {
+                    if best_aspire.is_none() || delta > best_aspire.unwrap().0 {
                         best_aspire = Some((delta, u, v));
                     }
                 }
@@ -97,68 +90,53 @@ where
         }
     }
 
-    // Prioriteer een toegestane zet boven een aspiratiezet
-    let chosen_swap = best_allowed.or(best_aspire);
-    let did_swap = if let Some((_, u, v)) = chosen_swap {
-        // Voer de swap uit
-        sol.remove(u);
-        sol.add(v);
-
-        // Werk frequentiegeheugen bij
-        freq[u] = freq[u].saturating_add(1);
-        freq[v] = freq[v].saturating_add(1);
-        // Markeer als taboe
+    let mut did_swap = false;
+    if let Some((_, u, v)) = best_allowed.or(best_aspire) {
+        // Gebruik long-term freq-helpers voor remove/add mét reset
+        remove_counted(sol, u, freq);
+        add_counted(sol, v, freq);
         tabu.forbid_u(u);
         tabu.forbid_v(v);
-        true
-    } else {
-        false
-    };
-    
-    // Verhoog altijd de tabu-teller en werk de duren bij
+        did_swap = true;
+    }
+
     tabu.step();
     tabu.update_tenures(sol.size(), sol.edges(), p.gamma_target, rng);
     did_swap
 }
 
-// Hulpfunctie om de graden van de kritieke sets te berekenen.
+/// Berekent MinInS en MaxOutS voor niet-taboe knopen (Sectie 3.4.1).
 fn calculate_critical_degrees(sol: &Solution, tabu: &DualTabu) -> (usize, usize) {
     let graph = sol.graph();
     let sol_bitset = sol.bitset();
     let min_in = sol_bitset.iter_ones()
-       .filter(|&u| !tabu.is_tabu_u(u))
-       .map(|u| count_intersecting_ones(graph.neigh_row(u), sol_bitset))
-       .min().unwrap_or(usize::MAX);
-
+        .filter(|&u| !tabu.is_tabu_u(u))
+        .map(|u| count_intersecting_ones(graph.neigh_row(u), sol_bitset))
+        .min().unwrap_or(usize::MAX);
     let max_out = (0..graph.n())
-       .filter(|&v| !sol_bitset[v] && !tabu.is_tabu_v(v))
-       .map(|v| count_intersecting_ones(graph.neigh_row(v), sol_bitset))
-       .max().unwrap_or(usize::MIN);
+        .filter(|&v| !sol_bitset[v] && !tabu.is_tabu_v(v))
+        .map(|v| count_intersecting_ones(graph.neigh_row(v), sol_bitset))
+        .max().unwrap_or(usize::MIN);
     (min_in, max_out)
 }
 
-// Hulpfunctie om de kritieke sets A en B te bouwen.
-fn build_critical_sets(sol: &Solution, tabu: &DualTabu, min_in: usize, max_out: usize) -> (Vec<usize>, Vec<usize>) {
+/// Bouwt kritieke sets A (min_in) en B (max_out) (Sectie 3.4.1).
+fn build_critical_sets(
+    sol: &Solution,
+    tabu: &DualTabu,
+    min_in: usize,
+    max_out: usize,
+) -> (Vec<usize>, Vec<usize>) {
     let graph = sol.graph();
     let sol_bitset = sol.bitset();
-
     let set_a: Vec<usize> = sol_bitset.iter_ones()
-       .filter(|&u| !tabu.is_tabu_u(u) && count_intersecting_ones(graph.neigh_row(u), sol_bitset) == min_in)
-       .collect();
+        .filter(|&u| !tabu.is_tabu_u(u)
+            && count_intersecting_ones(graph.neigh_row(u), sol_bitset) == min_in)
+        .collect();
     let set_b: Vec<usize> = (0..graph.n())
-       .filter(|&v| !sol_bitset[v] && !tabu.is_tabu_v(v) && count_intersecting_ones(graph.neigh_row(v), sol_bitset) == max_out)
-       .collect();
+        .filter(|&v| !sol_bitset[v]
+            && !tabu.is_tabu_v(v)
+            && count_intersecting_ones(graph.neigh_row(v), sol_bitset) == max_out)
+        .collect();
     (set_a, set_b)
-}
-
-// Statische hulpfunctie binnen de module om dichtheid te berekenen zonder een Solution-instantie.
-// Dit is nodig voor het aspiratiecriterium.
-impl<'g> Solution<'g> {
-    fn calculate_density(size: usize, edges: usize) -> f64 {
-        if size < 2 {
-            0.0
-        } else {
-            2.0 * edges as f64 / (size * (size - 1)) as f64
-        }
-    }
 }

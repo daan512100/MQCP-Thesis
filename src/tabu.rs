@@ -32,6 +32,18 @@ impl DualTabu {
         }
     }
 
+    /// Controleert of knoop `v` taboe is voor her-toevoegen.
+    #[inline]
+    pub fn is_tabu_u(&self, v: usize) -> bool {
+        self.expiry_u[v] > self.iter
+    }
+
+    /// Controleert of knoop `v` taboe is voor verwijderen.
+    #[inline]
+    pub fn is_tabu_v(&self, v: usize) -> bool {
+        self.expiry_v[v] > self.iter
+    }
+
     /// Herberekent `Tu` en `Tv` op basis van de huidige staat van de oplossing.
     /// Dit implementeert de formules uit Sectie 3.4.3, waarmee de bug
     /// `TSQC-03` is opgelost.
@@ -52,34 +64,18 @@ impl DualTabu {
         let needed_edges = (gamma * max_possible_edges as f64).ceil() as usize;
         let l = needed_edges.saturating_sub(edges).min(10);
         let c = (size_s / 40).max(6);
-        let rand_u = if c > 1 { rng.gen_range(0..c) } else { 0 };
+        // TSQC-03: Gebruik inclusieve Random(c) volgens de paper: [0..=c]
+        let rand_u = if c > 1 { rng.gen_range(0..=c) } else { 0 };
         self.tu = (l + rand_u).max(1);
 
         let base_v = (0.6 * l as f64).floor() as usize;
         let c6 = (0.6 * c as f64).floor() as usize;
-        let rand_v = if c6 > 1 { rng.gen_range(0..c6) } else { 0 };
+        // TSQC-03: Gebruik inclusieve Random(c6)
+        let rand_v = if c6 > 1 { rng.gen_range(0..=c6) } else { 0 };
         self.tv = (base_v + rand_v).max(1);
     }
 
-    /// Verhoogt de globale iteratieteller.
-    #[inline]
-    pub fn step(&mut self) {
-        self.iter += 1;
-    }
-
-    /// Controleert of knoop `v` taboe is om opnieuw te worden toegevoegd.
-    #[inline]
-    pub fn is_tabu_u(&self, v: usize) -> bool {
-        self.expiry_u[v] > self.iter
-    }
-
-    /// Controleert of knoop `v` taboe is om te worden verwijderd.
-    #[inline]
-    pub fn is_tabu_v(&self, v: usize) -> bool {
-        self.expiry_v[v] > self.iter
-    }
-
-    /// Maakt knoop `v` taboe om opnieuw te worden toegevoegd voor `tu` iteraties.
+    /// Maakt knoop `v` taboe om te worden toegevoegd voor `tu` iteraties.
     #[inline]
     pub fn forbid_u(&mut self, v: usize) {
         self.expiry_u[v] = self.iter + self.tu;
@@ -89,6 +85,12 @@ impl DualTabu {
     #[inline]
     pub fn forbid_v(&mut self, v: usize) {
         self.expiry_v[v] = self.iter + self.tv;
+    }
+
+    /// Verhoogt de globale iteratieteller.
+    #[inline]
+    pub fn step(&mut self) {
+        self.iter += 1;
     }
 
     /// Reset alle tabu-markeringen.

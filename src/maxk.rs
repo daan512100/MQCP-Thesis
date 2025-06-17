@@ -1,44 +1,66 @@
-//! src/maxk.rs
-//!
-//! Implementeert de buitenste `max-k` zoekstrategie voor TSQC.
-//! Deze strategie zoekt incrementeel naar de grootste `k` waarvoor een
-//! `gamma`-quasi-clique gevonden kan worden.
+// Bestand: src/maxk.rs
+//! Max-k zoekstrategie voor γ-quasi-cliques met bovengrens-pruning.
+//! Uitgevoerd door solve_fixed_k herhaald voor oplopende k, stopt bij
+//! ofwel geen γ-feasible oplossing meer, ofwel bij de bovengrens.
 
-use crate::{
-    construct::greedy_random_k, params::Params, restart::solve_fixed_k, solution::Solution, Graph,
-};
+use crate::{graph::Graph, restart::solve_fixed_k, solution::Solution, params::Params};
 use rand::Rng;
 
-/// Zoekt naar de maximale `gamma`-quasi-clique door `solve_fixed_k`
-/// iteratief aan te roepen voor oplopende waarden van `k`.
+/// Bereken de prefix-som van de knoopgraden, gesorteerd in aflopende volgorde.
+/// prefix[i] = som van de i hoogste graden.
+fn compute_degree_prefix(graph: &Graph) -> Vec<usize> {
+    let mut degrees: Vec<usize> = (0..graph.n()).map(|u| graph.degree(u)).collect();
+    degrees.sort_unstable_by(|a, b| b.cmp(a));
+    let mut prefix = Vec::with_capacity(degrees.len() + 1);
+    prefix.push(0);
+    for d in degrees {
+        prefix.push(prefix.last().unwrap() + d);
+    }
+    prefix
+}
+
+/// Bovengrens op het aantal randen in een subgraaf van grootte `k`,
+/// gebaseerd op de prefix-som. (Elke rand telt dubbel mee in de graden.)
+fn ub_edges(prefix: &[usize], k: usize) -> usize {
+    prefix[k] / 2
+}
+
+/// Zoekt naar de maximale γ-quasi-clique door solve_fixed_k
+/// herhaald voor k = 2..n en stopt bij eerste mislukking of bij pruning.
 pub fn solve_maxk<'g, R>(graph: &'g Graph, rng: &mut R, p: &Params) -> Solution<'g>
 where
-    // `Send + Sync` is nodig om de RNG thread-safe te maken voor parallelle MCTS.
     R: Rng + ?Sized + Send + Sync,
 {
-    // Start met een ondergrens voor k, bv. 2 of een kleine gretig gevonden oplossing.
-    let mut k_lb = 2.min(graph.n());
-    if k_lb == 0 {
+    let n = graph.n();
+    let degree_prefix = compute_degree_prefix(graph);
+
+    // Geen niet-triviale cliques mogelijk
+    if n < 2 {
         return Solution::new(graph);
     }
 
-    let mut best_sol = greedy_random_k(graph, k_lb, rng);
-    if best_sol.is_gamma_feasible(p.gamma_target) {
-        k_lb = best_sol.size();
-    } else {
-        // Als de initiële oplossing niet haalbaar is, starten we met een lege oplossing
-        // en beginnen we de zoektocht vanaf k_lb + 1.
-        best_sol = Solution::new(graph);
+    // Start met k = 2 voor een minimale γ-feasible basis
+    let mut best_sol = Solution::new(graph);
+    let mut sol = solve_fixed_k(graph, 2, rng, p);
+    if !sol.is_gamma_feasible(p.gamma_target) {
+        // Geen enkele 2-clique voldoet, dus geen oplossing
+        return best_sol;
     }
-    
-    for k in (k_lb + 1)..=graph.n() {
+    best_sol = sol;
+
+    // Probeer voor elke volgende k, met bovengrenscontrole
+    for k in 3..=n {
+        let ub = ub_edges(&degree_prefix, k);
+        let required_edges = (p.gamma_target * ((k * (k - 1)) as f64) / 2.0).ceil() as usize;
+        if ub < required_edges {
+            // Pruning: zelfs in het beste geval te weinig randen
+            break;
+        }
         let sol_k = solve_fixed_k(graph, k, rng, p);
         if sol_k.is_gamma_feasible(p.gamma_target) {
-            // We hebben een haalbare oplossing gevonden voor deze k, dus dit is onze nieuwe beste.
             best_sol = sol_k;
         } else {
-            // Eerste `k` die faalt na een succesvolle `k-1` geeft aan dat we
-            // waarschijnlijk de maximale grootte hebben gevonden.
+            // Geen γ-quasi-clique van deze grootte → stoppen
             break;
         }
     }
