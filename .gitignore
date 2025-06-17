@@ -1,0 +1,17 @@
+# Rust
+/target
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+dist/
+build/
+*.egg-info/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,30 @@
+# Cargo.toml
+[package]
+name = "tsqc"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Daan Starre <daan.starre@example.com>"]
+
+[lib]
+# Bouw zowel een 'cdylib' (voor Python) als een 'rlib' (voor Rust-tests)
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22.1", features = ["extension-module"] }
+bitvec = "1.0.1"
+rand = "0.8.5"
+
+# CORRECTIE: De versie is aangepast naar "0.3.1", een bestaande en compatibele versie.
+rand_chacha = "0.3.1"
+
+rayon = { version = "1.10.0", optional = true }
+
+[features]
+# Schakel parallelle MCTS (met Rayon) standaard in.
+default = ["parallel_mcts"]
+parallel_mcts = ["dep:rayon"]
+
+[dev-dependencies]
+# Voor floating-point vergelijkingen in tests
+approx = "0.5.1"
