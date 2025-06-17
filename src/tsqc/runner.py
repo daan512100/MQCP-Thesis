@@ -15,7 +15,7 @@ from tsqc import solve_k_py, solve_max_py, parse_dimacs_py
 def main():
     """Hoofdfunctie voor het parsen van argumenten en het aanroepen van de oplosser."""
     parser = argparse.ArgumentParser(
-        description="Een productieklare oplosser voor het Maximum Quasi-Clique Probleem.",
+         description="Een productieklare oplosser voor het Maximum Quasi-Clique Probleem.",
         formatter_class=argparse.RawTextHelpFormatter
     )
 
@@ -45,7 +45,7 @@ def main():
     exec_group = parser.add_argument_group("Uitvoeringscontrole")
     exec_group.add_argument(
         "-r", "--runs", type=int, default=1,
-        help="Aantal onafhankelijke runs met verschillende seeds. (default: 1)"
+        help="Aantal onafhankelijke runs met verschillende seeds.\n(default: 1)"
     )
     exec_group.add_argument(
         "-s", "--seed", type=int, default=42,
@@ -68,7 +68,9 @@ def main():
     mcts_group.add_argument("--mcts-budget", type=int, default=100, help="Simulatiebudget voor MCTS. (default: 100)")
     mcts_group.add_argument("--mcts-uct", type=float, default=1.414, help="UCT-exploratieconstante. (default: 1.414)")
     mcts_group.add_argument("--mcts-depth", type=int, default=5, help="Maximale boomdiepte voor MCTS. (default: 5)")
-    mcts_group.add_argument("--lns-repair", type=int, default=10, help="Aantal hersteliteraties voor LNS. (default: 10)")
+    
+    # CORRECTIE 1: De naam van het command-line argument is aangepast naar '--lns-repair-depth'.
+    mcts_group.add_argument("--lns-repair-depth", type=int, default=10, help="Aantal hersteliteraties voor LNS. (default: 10)")
 
     args = parser.parse_args()
 
@@ -80,7 +82,7 @@ def main():
 
     # --- Configuratie van parallellisme ---
     if args.threads:
-        os.environ = str(args.threads)
+        os.environ["RAYON_NUM_THREADS"] = str(args.threads)
 
     # --- Uitvoering van de oplosser ---
     try:
@@ -100,17 +102,18 @@ def main():
         start_time = time.perf_counter()
 
         try:
+            # CORRECTIE 2: De naam van het keyword argument is hier ook aangepast.
             if args.mode == 'max':
                 size, edges, density = solve_max_py(
                     instance_path=str(args.instance), 
                     gamma=args.gamma, 
                     seed=run_seed, 
-                    runs=1, # Runs worden extern beheerd
+                    runs=1,
                     use_mcts=args.use_mcts, 
                     mcts_budget=args.mcts_budget, 
                     mcts_uct=args.mcts_uct, 
                     mcts_depth=args.mcts_depth, 
-                    lns_repair=args.lns_repair
+                    lns_repair_depth=args.lns_repair_depth # Aangepast van lns_repair
                 )
             else: # mode == 'fixed'
                 size, edges, density = solve_k_py(
@@ -118,12 +121,12 @@ def main():
                     k=args.k,
                     gamma=args.gamma, 
                     seed=run_seed, 
-                    runs=1, # Runs worden extern beheerd
+                    runs=1,
                     use_mcts=args.use_mcts, 
                     mcts_budget=args.mcts_budget, 
                     mcts_uct=args.mcts_uct, 
                     mcts_depth=args.mcts_depth, 
-                    lns_repair=args.lns_repair
+                    lns_repair_depth=args.lns_repair_depth # Aangepast van lns_repair
                 )
             
             elapsed = time.perf_counter() - start_time

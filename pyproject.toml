@@ -17,8 +17,15 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 
+# OPTIONEEL MAAR AANBEVOLEN: Definieer een commando voor de runner
+[project.scripts]
+tsqc = "tsqc.runner:main"
+
 [tool.maturin]
-# CORRECTIE: Vertel maturin expliciet hoe de native module moet heten.
-# Dit lost de 'PyInit_tsqc' waarschuwing op.
+# Vertel maturin expliciet hoe de native module moet heten.
 module-name = "tsqc._native"
+
+# DIT IS DE CRUCIALE FIX: Vertel maturin waar de Python-broncode staat.
+python-source = "src"
+
 features = ["pyo3/extension-module", "parallel_mcts"]
