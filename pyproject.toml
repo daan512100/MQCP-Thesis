@@ -5,9 +5,6 @@ build-backend = "maturin"
 
 [project]
 name = "tsqc"
-requires-python = ">=3.8"
-
-# CORRECTIE: Vertel maturin dat de versie dynamisch is en uit Cargo.toml komt.
 dynamic = ["version"]
 
 authors = [
@@ -21,4 +18,7 @@ classifiers = [
 ]
 
 [tool.maturin]
+# CORRECTIE: Vertel maturin expliciet hoe de native module moet heten.
+# Dit lost de 'PyInit_tsqc' waarschuwing op.
+module-name = "tsqc._native"
 features = ["pyo3/extension-module", "parallel_mcts"]

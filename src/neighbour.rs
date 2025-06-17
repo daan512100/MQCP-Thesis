@@ -5,7 +5,12 @@
 
 use crate::{params::Params, solution::Solution, tabu::DualTabu};
 use rand::Rng;
-use std::ops::BitAnd;
+
+/// Private helper-functie om de handmatige intersectie-telling uit te voeren.
+/// Dit is de centrale oplossing voor de E0369-compilerfout.
+fn count_intersecting_ones(a: &bitvec::slice::BitSlice, b: &bitvec::slice::BitSlice) -> usize {
+    a.iter().by_vals().zip(b.iter().by_vals()).filter(|&(x, y)| x && y).count()
+}
 
 /// Probeert een enkele intensificatiezet uit te voeren.
 ///
@@ -29,7 +34,7 @@ pub fn improve_once<'g, R>(
     rng: &mut R,
 ) -> bool
 where
-    R: Rng +?Sized,
+    R: Rng + ?Sized,
 {
     let graph = sol.graph();
     let k = sol.size();
@@ -50,19 +55,20 @@ where
 
     // Bouw kritieke sets A en B op basis van de correct berekende graden
     let (set_a, set_b) = build_critical_sets(sol, tabu, min_in, max_out);
-
+    
     // --- Zoek de beste swap volgens de hiërarchie van het paper ---
     let mut best_allowed: Option<(isize, usize, usize)> = None; // (delta, u, v)
     let mut best_aspire: Option<(isize, usize, usize)> = None;
 
     let current_edges = sol.edges();
+    let sol_bitset = sol.bitset();
     for &u in &set_a {
         // De verandering in het aantal kanten is `gain - loss`.
         // `loss` is het aantal buren van `u` binnen de huidige oplossing `S`.
-        let loss = (graph.neigh_row(u) & sol.bitset()).count_ones();
+        let loss = count_intersecting_ones(graph.neigh_row(u), sol_bitset);
         for &v in &set_b {
             // `gain` is het aantal buren van `v` binnen de huidige oplossing `S`.
-            let gain = (graph.neigh_row(v) & sol.bitset()).count_ones();
+            let gain = count_intersecting_ones(graph.neigh_row(v), sol_bitset);
             
             // De totale verandering in kanten (delta) bij het swappen van u en v is
             // `gain - loss`. Als u en v buren zijn, wordt die kant niet meegeteld
@@ -71,10 +77,10 @@ where
             let delta = gain as isize - loss as isize;
 
             let is_tabu = tabu.is_tabu_u(u) || tabu.is_tabu_v(v);
-            
+
             if !is_tabu {
                 // Vergelijk met de beste toegestane zet tot nu toe
-                if delta >= best_allowed.map_or(isize::MIN, |(d, _, _)| d) {
+                if best_allowed.is_none() || delta >= best_allowed.unwrap().0 {
                     best_allowed = Some((delta, u, v));
                 }
             } else {
@@ -83,7 +89,7 @@ where
                 let new_rho = Solution::calculate_density(k, new_edges);
                 if new_rho > best_global_rho {
                     // Vergelijk met de beste aspiratiezet tot nu toe
-                    if delta >= best_aspire.map_or(isize::MIN, |(d, _, _)| d) {
+                    if best_aspire.is_none() || delta >= best_aspire.unwrap().0 {
                         best_aspire = Some((delta, u, v));
                     }
                 }
@@ -93,7 +99,6 @@ where
 
     // Prioriteer een toegestane zet boven een aspiratiezet
     let chosen_swap = best_allowed.or(best_aspire);
-
     let did_swap = if let Some((_, u, v)) = chosen_swap {
         // Voer de swap uit
         sol.remove(u);
@@ -102,7 +107,6 @@ where
         // Werk frequentiegeheugen bij
         freq[u] = freq[u].saturating_add(1);
         freq[v] = freq[v].saturating_add(1);
-
         // Markeer als taboe
         tabu.forbid_u(u);
         tabu.forbid_v(v);
@@ -110,11 +114,10 @@ where
     } else {
         false
     };
-
+    
     // Verhoog altijd de tabu-teller en werk de duren bij
     tabu.step();
     tabu.update_tenures(sol.size(), sol.edges(), p.gamma_target, rng);
-    
     did_swap
 }
 
@@ -122,17 +125,15 @@ where
 fn calculate_critical_degrees(sol: &Solution, tabu: &DualTabu) -> (usize, usize) {
     let graph = sol.graph();
     let sol_bitset = sol.bitset();
-
     let min_in = sol_bitset.iter_ones()
-       .filter(|&u|!tabu.is_tabu_u(u))
-       .map(|u| (graph.neigh_row(u) & sol_bitset).count_ones())
+       .filter(|&u| !tabu.is_tabu_u(u))
+       .map(|u| count_intersecting_ones(graph.neigh_row(u), sol_bitset))
        .min().unwrap_or(usize::MAX);
 
     let max_out = (0..graph.n())
-       .filter(|&v|!sol_bitset[v] &&!tabu.is_tabu_v(v))
-       .map(|v| (graph.neigh_row(v) & sol_bitset).count_ones())
+       .filter(|&v| !sol_bitset[v] && !tabu.is_tabu_v(v))
+       .map(|v| count_intersecting_ones(graph.neigh_row(v), sol_bitset))
        .max().unwrap_or(usize::MIN);
-
     (min_in, max_out)
 }
 
@@ -142,13 +143,11 @@ fn build_critical_sets(sol: &Solution, tabu: &DualTabu, min_in: usize, max_out: 
     let sol_bitset = sol.bitset();
 
     let set_a: Vec<usize> = sol_bitset.iter_ones()
-       .filter(|&u|!tabu.is_tabu_u(u) && (graph.neigh_row(u) & sol_bitset).count_ones() == min_in)
+       .filter(|&u| !tabu.is_tabu_u(u) && count_intersecting_ones(graph.neigh_row(u), sol_bitset) == min_in)
        .collect();
-
     let set_b: Vec<usize> = (0..graph.n())
-       .filter(|&v|!sol_bitset[v] &&!tabu.is_tabu_v(v) && (graph.neigh_row(v) & sol_bitset).count_ones() == max_out)
+       .filter(|&v| !sol_bitset[v] && !tabu.is_tabu_v(v) && count_intersecting_ones(graph.neigh_row(v), sol_bitset) == max_out)
        .collect();
-
     (set_a, set_b)
 }
 

@@ -2,63 +2,78 @@
 //!
 //! Bundelt alle afstembare parameters voor de TSQC-oplosser.
 
+use pyo3::prelude::*;
+
 /// Alle afstembare besturingselementen voor TSQC en de MCTS-LNS uitbreiding.
+#[pyclass]
 #[derive(Clone, Debug)]
 pub struct Params {
-    // --- Algemene TSQC-parameters ---
-    /// Doeldichtheid `gamma` in (0,1] die een gamma-quasi-clique definieert.
+    #[pyo3(get, set)]
     pub gamma_target: f64,
-
-    /// `L`: maximaal aantal opeenvolgende niet-verbeterende swaps
-    /// voordat een diversificatiestap wordt geactiveerd (Sectie 3.1).
+    #[pyo3(get, set)]
     pub stagnation_iter: usize,
-
-    /// `It_max`: harde limiet op het totale aantal TSQC-iteraties
-    /// over alle restarts heen (Sectie 3.1).
+    #[pyo3(get, set)]
     pub max_iter: usize,
-
-    // --- Tabu-parameters ---
-    /// Basisduur voor het verbieden van recent verwijderde knopen (Tu).
-    /// *Opmerking:* Dit is slechts een veiligheidsminimum; de werkelijke Tu
-    /// wordt elke iteratie adaptief herberekend (§3.4.3).
+    #[pyo3(get, set)]
     pub tenure_u: usize,
-
-    /// Basisduur voor het verbieden van recent toegevoegde knopen (Tv).
-    /// *Opmerking:* De werkelijke Tv is eveneens adaptief.
+    #[pyo3(get, set)]
     pub tenure_v: usize,
-
-    // --- MCTS-LNS Diversificatieparameters ---
-    /// Vlag om MCTS-gestuurde LNS-diversificatie in te schakelen
-    /// in plaats van de standaard 'shake'-perturbaties.
+    #[pyo3(get, set)]
     pub use_mcts: bool,
-
-    /// MCTS-budget: aantal gesimuleerde playouts voor de geleide diversificatie.
+    #[pyo3(get, set)]
     pub mcts_budget: usize,
-
-    /// Exploratieconstante (UCT) voor MCTS-knoopselectie.
+    #[pyo3(get, set)]
     pub mcts_exploration_const: f64,
-
-    /// Maximale verwijderingsdiepte (lengte van de sequentie) in MCTS.
+    #[pyo3(get, set)]
     pub mcts_max_depth: usize,
-
-    /// Aantal lokale hersteliteraties (mini-TSQC) na de MCTS-verwijdering.
+    #[pyo3(get, set)]
     pub lns_repair_depth: usize,
 }
 
+#[pymethods]
+impl Params {
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        gamma_target: f64,
+        stagnation_iter: usize,
+        max_iter: usize,
+        tenure_u: usize,
+        tenure_v: usize,
+        use_mcts: bool,
+        mcts_budget: usize,
+        mcts_exploration_const: f64,
+        mcts_max_depth: usize,
+        lns_repair_depth: usize,
+    ) -> Self {
+        Self {
+            gamma_target,
+            stagnation_iter,
+            max_iter,
+            tenure_u,
+            tenure_v,
+            use_mcts,
+            mcts_budget,
+            mcts_exploration_const,
+            mcts_max_depth,
+            lns_repair_depth,
+        }
+    }
+}
+
+// CORRECTIE: De 'impl Default' is teruggezet voor intern Rust-gebruik,
+// zoals in `lib.rs`.
 impl Default for Params {
     fn default() -> Self {
         Params {
-            // TSQC defaults
             gamma_target: 0.90,
-            stagnation_iter: 1_000,   // L = 1000, per 
-            max_iter: 100_000_000, // It_max = 10^8, per 
-            tenure_u: 1,           // Veiligheidsminimum
-            tenure_v: 1,           // Veiligheidsminimum
-
-            // MCTS-LNS defaults (standaard uitgeschakeld)
+            stagnation_iter: 1_000,
+            max_iter: 100_000_000,
+            tenure_u: 1,
+            tenure_v: 1,
             use_mcts: false,
             mcts_budget: 100,
-            mcts_exploration_const: 1.414, // sqrt(2)
+            mcts_exploration_const: 1.414,
             mcts_max_depth: 5,
             lns_repair_depth: 10,
         }

@@ -2,13 +2,18 @@
 //! Implementeert de Monte Carlo Tree Search.
 
 use crate::{graph::Graph, lns::apply_lns, params::Params, solution::Solution};
+use bitvec::prelude::*;
 use rand::seq::SliceRandom;
 use rand::Rng;
-use std::collections::HashSet;
-use std::ops::BitAnd; // Oplossing voor E0369
+use std::collections::{HashMap, HashSet};
 
 #[cfg(feature = "parallel_mcts")]
 use rayon::prelude::*;
+
+/// Private helper-functie om de handmatige intersectie-telling uit te voeren.
+fn count_intersecting_ones(a: &BitSlice, b: &BitSlice) -> usize {
+    a.iter().by_vals().zip(b.iter().by_vals()).filter(|&(x, y)| x && y).count()
+}
 
 struct MctsNode {
     parent: Option<usize>,
@@ -123,9 +128,11 @@ impl<'g> MctsTree<'g> {
 
         let threshold = (self.params.gamma_target * (current_sol.size().saturating_sub(1)) as f64).floor() as usize;
         let sol_bitset = current_sol.bitset();
+        
+        // CORRECTIE (E0369): De `&`-operator wordt vervangen door de helper-functie.
         let mut critical_subset: Vec<usize> = sol_bitset
             .iter_ones()
-            .filter(|&u| (self.graph.neigh_row(u).bitand(sol_bitset)).count_ones() <= threshold)
+            .filter(|&u| count_intersecting_ones(self.graph.neigh_row(u), sol_bitset) <= threshold)
             .collect();
 
         let tried_children: HashSet<usize> = self.nodes[node_idx].children.iter().map(|&c| self.nodes[c].vertex_removed.unwrap()).collect();
@@ -150,7 +157,7 @@ impl<'g> MctsTree<'g> {
             return new_node_idx;
         }
 
-        node_idx // Geen uitbreiding mogelijk
+        node_idx
     }
 
     fn rollout<R: Rng + ?Sized>(&self, from_node: &MctsNode, rng: &mut R) -> f64 {
@@ -207,38 +214,29 @@ impl<'g> MctsTree<'g> {
         seq
     }
 
-    /// Voegt de statistieken van een andere (parallelle) boom samen in deze boom.
     fn merge_from(&mut self, other: &MctsTree) {
         if self.nodes.is_empty() || other.nodes.is_empty() {
             return;
         }
-        
-        // OPLOSSING voor E0502: Lees eerst de data die je nodig hebt, en pas daarna aan.
-        // We creëren de map met kind-informatie vóórdat we een muteerbare referentie
-        // naar de root node maken.
+
         let self_children_map: HashMap<usize, usize> = self.nodes[0]
             .children
             .iter()
             .map(|&idx| (self.nodes[idx].vertex_removed.unwrap(), idx))
             .collect();
-        
+
         let other_root = &other.nodes[0];
-        
-        // Voer simpele updates uit op de root-node.
         self.nodes[0].visits += other_root.visits;
         self.nodes[0].total_reward += other_root.total_reward;
 
-        // Itereer nu over de kinderen van de andere boom om te mergen.
         for &other_child_idx in &other_root.children {
             let other_child = &other.nodes[other_child_idx];
             let vertex = other_child.vertex_removed.unwrap();
 
             if let Some(&self_child_idx) = self_children_map.get(&vertex) {
-                // Kind bestaat, voeg statistieken samen.
                 self.nodes[self_child_idx].visits += other_child.visits;
                 self.nodes[self_child_idx].total_reward += other_child.total_reward;
             } else {
-                // Kind bestaat niet, voeg het toe. Dit is nu veilig.
                 let new_node = MctsNode {
                     parent: Some(0),
                     children: Vec::new(),

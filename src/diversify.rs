@@ -6,7 +6,12 @@
 use crate::{params::Params, solution::Solution, tabu::DualTabu};
 use rand::seq::SliceRandom;
 use rand::Rng;
-use std::ops::BitAnd;
+
+/// Private helper-functie om de handmatige intersectie-telling uit te voeren.
+/// Dit is de centrale oplossing voor de E0369-compilerfout.
+fn count_intersecting_ones(a: &bitvec::slice::BitSlice, b: &bitvec::slice::BitSlice) -> usize {
+    a.iter().by_vals().zip(b.iter().by_vals()).filter(|&(x, y)| x && y).count()
+}
 
 /// Zware perturbatie ("grote schok"):
 /// 1. Verwijder een willekeurige knoop `u` ∈ S.
@@ -21,7 +26,7 @@ pub fn heavy_perturbation<'g, R>(
     p: &Params,
     freq: &mut Vec<usize>,
 ) where
-    R: Rng +?Sized,
+    R: Rng + ?Sized,
 {
     let k = sol.size();
     if k < 1 {
@@ -46,17 +51,17 @@ pub fn heavy_perturbation<'g, R>(
     // 3. Verzamel kandidaten voor toevoeging.
     let sol_bitset = sol.bitset();
     let mut candidates: Vec<usize> = (0..graph.n())
-       .filter(|&v|!sol_bitset[v] && (graph.neigh_row(v) & sol_bitset).count_ones() < h)
+       .filter(|&v| !sol_bitset[v] && count_intersecting_ones(graph.neigh_row(v), sol_bitset) < h)
        .collect();
 
     // Fallback: als geen enkele knoop < h, neem dan de knopen met de minimale graad.
     if candidates.is_empty() {
         let min_deg_out = (0..graph.n())
-           .filter(|&v|!sol_bitset[v])
-           .map(|v| (graph.neigh_row(v) & sol_bitset).count_ones())
+           .filter(|&v| !sol_bitset[v])
+           .map(|v| count_intersecting_ones(graph.neigh_row(v), sol_bitset))
            .min().unwrap_or(0);
         candidates = (0..graph.n())
-           .filter(|&v|!sol_bitset[v] && (graph.neigh_row(v) & sol_bitset).count_ones() == min_deg_out)
+           .filter(|&v| !sol_bitset[v] && count_intersecting_ones(graph.neigh_row(v), sol_bitset) == min_deg_out)
            .collect();
     }
 
@@ -92,7 +97,7 @@ pub fn mild_perturbation<'g, R>(
     p: &Params,
     freq: &mut Vec<usize>,
 ) where
-    R: Rng +?Sized,
+    R: Rng + ?Sized,
 {
     let k = sol.size();
     if k == 0 {
@@ -103,18 +108,18 @@ pub fn mild_perturbation<'g, R>(
 
     // 1. Bouw kritieke sets A en B.
     let min_in = sol_bitset.iter_ones()
-       .map(|u| (graph.neigh_row(u) & sol_bitset).count_ones())
+       .map(|u| count_intersecting_ones(graph.neigh_row(u), sol_bitset))
        .min().unwrap_or(0);
     let set_a: Vec<usize> = sol_bitset.iter_ones()
-       .filter(|&u| (graph.neigh_row(u) & sol_bitset).count_ones() == min_in)
+       .filter(|&u| count_intersecting_ones(graph.neigh_row(u), sol_bitset) == min_in)
        .collect();
 
     let max_out = (0..graph.n())
-       .filter(|&v|!sol_bitset[v])
-       .map(|v| (graph.neigh_row(v) & sol_bitset).count_ones())
+       .filter(|&v| !sol_bitset[v])
+       .map(|v| count_intersecting_ones(graph.neigh_row(v), sol_bitset))
        .max().unwrap_or(0);
     let set_b: Vec<usize> = (0..graph.n())
-       .filter(|&v|!sol_bitset[v] && (graph.neigh_row(v) & sol_bitset).count_ones() == max_out)
+       .filter(|&v| !sol_bitset[v] && count_intersecting_ones(graph.neigh_row(v), sol_bitset) == max_out)
        .collect();
 
     // 2. Wissel willekeurige u ∈ A en v ∈ B.

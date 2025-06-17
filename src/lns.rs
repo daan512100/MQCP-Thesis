@@ -1,7 +1,7 @@
 //! src/lns.rs
 //!
 //! Implementeert de Large Neighborhood Search (LNS) herstelheuristiek.
-//! Dit volgt de twee-fasen aanpak uit de thesis-proposal :
+//! Dit volgt de twee-fasen aanpak uit de thesis-proposal:
 //! 1. Greedy Completion: herstel de oplossingsgrootte.
 //! 2. Mini-TSQC Refinement: verfijn de oplossing met lokale zoekstappen.
 
@@ -9,7 +9,6 @@ use crate::{
     neighbour::improve_once, params::Params, solution::Solution, tabu::DualTabu,
 };
 use rand::Rng;
-use std::ops::BitAnd;
 
 /// Past LNS-herstel toe op een deels vernietigde oplossing.
 ///
@@ -24,7 +23,7 @@ pub fn apply_lns<'g, R>(
     rng: &mut R,
 ) -> Solution<'g>
 where
-    R: Rng +?Sized,
+    R: Rng + ?Sized,
 {
     let mut sol = initial_sol.clone();
     for &v in removals {
@@ -42,8 +41,17 @@ where
         let sol_bitset = sol.bitset();
 
         for v in 0..graph.n() {
-            if!sol_bitset[v] {
-                let gain = (graph.neigh_row(v) & sol_bitset).count_ones() as isize;
+            if !sol_bitset[v] {
+                // CORRECTIE (E0369): De `&`-operator wordt vervangen door een handmatige
+                // en performante intersectie-telling via iterators.
+                let gain = graph
+                    .neigh_row(v)
+                    .iter()
+                    .by_vals()
+                    .zip(sol_bitset.iter().by_vals())
+                    .filter(|&(a, b)| a && b)
+                    .count() as isize;
+
                 if gain > best_gain {
                     best_gain = gain;
                     best_v = Some(v);
@@ -67,7 +75,7 @@ where
         let best_rho = 0.0; // Aspiratie is niet relevant in deze korte verfijning.
 
         for _ in 0..p.lns_repair_depth {
-            if!improve_once(&mut sol, &mut tabu, best_rho, &mut freq, p, rng) {
+            if !improve_once(&mut sol, &mut tabu, best_rho, &mut freq, p, rng) {
                 // Geen verbetering meer mogelijk.
                 break;
             }

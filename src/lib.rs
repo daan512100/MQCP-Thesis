@@ -32,7 +32,7 @@ use std::io::BufReader;
 #[pyfunction]
 #[pyo3(signature = (
     instance_path, k, gamma, seed, runs=1,
-    use_mcts=false, mcts_budget=100, mcts_uct=1.414, mcts_depth=5, lns_repair=10
+    use_mcts=false, mcts_budget=100, mcts_uct=1.414, mcts_depth=5, lns_repair_depth=10
 ))]
 fn solve_k_py(
     instance_path: String,
@@ -44,7 +44,7 @@ fn solve_k_py(
     mcts_budget: usize,
     mcts_uct: f64,
     mcts_depth: usize,
-    lns_repair: usize,
+    lns_repair_depth: usize,
 ) -> PyResult<(usize, usize, f64)> {
     let file = File::open(&instance_path)
        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
@@ -54,7 +54,7 @@ fn solve_k_py(
     let mut p = Params::default();
     p.gamma_target = gamma;
     if use_mcts {
-        p.enable_mcts(mcts_budget, mcts_uct, mcts_depth, lns_repair);
+        p.enable_mcts(mcts_budget, mcts_uct, mcts_depth, lns_repair_depth);
     }
 
     let mut best_sol_overall = Solution::new(&graph);
@@ -78,7 +78,7 @@ fn solve_k_py(
 #[pyfunction]
 #[pyo3(signature = (
     instance_path, gamma, seed, runs=1,
-    use_mcts=false, mcts_budget=100, mcts_uct=1.414, mcts_depth=5, lns_repair=10
+    use_mcts=false, mcts_budget=100, mcts_uct=1.414, mcts_depth=5, lns_repair_depth=10
 ))]
 fn solve_max_py(
     instance_path: String,
@@ -89,7 +89,7 @@ fn solve_max_py(
     mcts_budget: usize,
     mcts_uct: f64,
     mcts_depth: usize,
-    lns_repair: usize,
+    lns_repair_depth: usize,
 ) -> PyResult<(usize, usize, f64)> {
     let file = File::open(&instance_path)
        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
@@ -99,7 +99,7 @@ fn solve_max_py(
     let mut p = Params::default();
     p.gamma_target = gamma;
     if use_mcts {
-        p.enable_mcts(mcts_budget, mcts_uct, mcts_depth, lns_repair);
+        p.enable_mcts(mcts_budget, mcts_uct, mcts_depth, lns_repair_depth);
     }
     
     let mut best_sol_overall = Solution::new(&graph);
@@ -107,7 +107,8 @@ fn solve_max_py(
         let mut rng = StdRng::seed_from_u64(seed + i as u64);
         let sol = maxk::solve_maxk(&graph, &mut rng, &p);
         // Voor max-k is het primaire doel de grootte, met dichtheid als tie-breaker.
-        if sol.size() > best_sol_overall.size()|| (sol.size() == best_sol_overall.size() && sol.density() > best_sol_overall.density())
+        if sol.size() > best_sol_overall.size()
+            || (sol.size() == best_sol_overall.size() && sol.density() > best_sol_overall.density())
         {
             best_sol_overall = sol;
         }
@@ -134,6 +135,7 @@ fn parse_dimacs_py(instance_path: String) -> PyResult<(usize, usize)> {
 /// Definieert de Python-module `_native`.
 #[pymodule]
 fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<Params>()?; // Voeg de Params struct toe aan de Python module
     m.add_function(wrap_pyfunction!(solve_k_py, m)?)?;
     m.add_function(wrap_pyfunction!(solve_max_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_dimacs_py, m)?)?;

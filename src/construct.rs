@@ -7,7 +7,6 @@
 use crate::{graph::Graph, solution::Solution};
 use rand::seq::SliceRandom;
 use rand::Rng;
-use std::ops::BitAnd;
 
 /// Creëert een initiële oplossing van grootte `k` met de greedy-random heuristiek.
 /// 1. Selecteer een willekeurige knoop als startpunt.
@@ -17,7 +16,7 @@ use std::ops::BitAnd;
 /// Dit volgt exact de procedure beschreven in Sectie 3.3 van het paper.
 pub fn greedy_random_k<'g, R>(graph: &'g Graph, k: usize, rng: &mut R) -> Solution<'g>
 where
-    R: Rng +?Sized,
+    R: Rng + ?Sized,
 {
     assert!(k > 0 && k <= graph.n(), "k moet binnen het bereik [1, n] liggen");
     let mut sol = Solution::new(graph);
@@ -34,8 +33,19 @@ where
         let sol_bitset = sol.bitset();
 
         for v in 0..graph.n() {
-            if!sol_bitset[v] { // Alleen knopen buiten de oplossing overwegen
-                let edges = (graph.neigh_row(v) & sol_bitset).count_ones();
+            if !sol_bitset[v] { // Alleen knopen buiten de oplossing overwegen
+                
+                // CORRECTIE (E0369): De `&`-operator wordt vervangen door een handmatige
+                // en performante intersectie-telling via iterators. Dit omzeilt het
+                // onverwachte compilerprobleem zonder prestatieverlies.
+                let edges = graph
+                    .neigh_row(v)
+                    .iter()
+                    .by_vals()
+                    .zip(sol_bitset.iter().by_vals())
+                    .filter(|&(a, b)| a && b)
+                    .count();
+
                 if edges > best_edges {
                     best_edges = edges;
                     candidates.clear();

@@ -7,7 +7,6 @@
 
 use crate::graph::Graph;
 use bitvec::prelude::*;
-use std::ops::BitAnd;
 
 /// Een veranderlijke quasi-clique kandidaat, gebonden aan een specifieke `Graph`.
 #[derive(Clone, Debug)]
@@ -46,12 +45,6 @@ impl<'g> Solution<'g> {
     }
 
     /// Geeft een onveranderlijke slice van de bitset die de knopen in `S` representeert.
-    ///
-    /// **CRUCIALE CORRECTIE:** Deze functie geeft nu `&BitSlice` terug. Dit is de
-    /// centrale fix voor alle `E0369`-fouten. De bitwise AND operator (`&`) is
-    /// gedefinieerd voor de combinatie `&BitSlice & &BitSlice`, en **niet** voor
-    /// `&BitSlice & &BitVec`. Omdat `Graph::neigh_row` een `&BitSlice` teruggeeft,
-    /// is dit de enige correcte signatuur.
     #[inline]
     pub fn bitset(&self) -> &BitSlice {
         &self.vertices
@@ -87,9 +80,14 @@ impl<'g> Solution<'g> {
         if self.vertices[v] {
             return;
         }
-        // Tel het aantal nieuwe kanten dat wordt gevormd met reeds aanwezige knopen.
-        // Omdat bitset() nu &BitSlice teruggeeft, is deze operatie correct en eenvoudig.
-        let added_edges = (self.graph.neigh_row(v) & self.bitset()).count_ones();
+        
+        // CORRECTIE (E0369): Vervang de `&`-operator door de handmatige intersectie-telling.
+        let added_edges = self.graph.neigh_row(v)
+            .iter()
+            .by_vals()
+            .zip(self.bitset().iter().by_vals())
+            .filter(|&(a, b)| a && b)
+            .count();
 
         self.vertices.set(v, true);
         self.size += 1;
@@ -102,9 +100,15 @@ impl<'g> Solution<'g> {
         if !self.vertices[v] {
             return;
         }
-        // Tel het aantal kanten dat verloren gaat door het verwijderen van `v`.
-        // Omdat bitset() nu &BitSlice teruggeeft, is deze operatie correct en eenvoudig.
-        let removed_edges = (self.graph.neigh_row(v) & self.bitset()).count_ones();
+        
+        // CORRECTIE (E0369): Pas dezelfde fix toe voor de `remove`-methode.
+        // We tellen de verbindingen van `v` met de *huidige* oplossing, voordat `v` wordt verwijderd.
+        let removed_edges = self.graph.neigh_row(v)
+            .iter()
+            .by_vals()
+            .zip(self.bitset().iter().by_vals())
+            .filter(|&(a, b)| a && b)
+            .count();
 
         self.vertices.set(v, false);
         self.size -= 1;

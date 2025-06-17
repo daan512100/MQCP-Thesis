@@ -14,7 +14,7 @@ use rand::Rng;
 pub fn solve_maxk<'g, R>(graph: &'g Graph, rng: &mut R, p: &Params) -> Solution<'g>
 where
     // `Send + Sync` is nodig om de RNG thread-safe te maken voor parallelle MCTS.
-    R: Rng +?Sized + Send + Sync,
+    R: Rng + ?Sized + Send + Sync,
 {
     // Start met een ondergrens voor k, bv. 2 of een kleine gretig gevonden oplossing.
     let mut k_lb = 2.min(graph.n());
@@ -26,6 +26,8 @@ where
     if best_sol.is_gamma_feasible(p.gamma_target) {
         k_lb = best_sol.size();
     } else {
+        // Als de initiële oplossing niet haalbaar is, starten we met een lege oplossing
+        // en beginnen we de zoektocht vanaf k_lb + 1.
         best_sol = Solution::new(graph);
     }
     

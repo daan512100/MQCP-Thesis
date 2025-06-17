@@ -2,7 +2,6 @@
 //!
 //! Implementeert de multi-start Tabu Search voor een vaste `k` (`solve_fixed_k`),
 //! wat de kern is van het TSQC-algoritme (Algoritmes 1 & 2 in ScriptiePaper.pdf).
-
 use crate::{
     construct::greedy_random_k,
     diversify::{heavy_perturbation, mild_perturbation},
@@ -16,7 +15,6 @@ use crate::{
 };
 use rand::seq::SliceRandom;
 use rand::Rng;
-use std::ops::BitAnd;
 
 /// Zoekt naar een `gamma`-quasi-clique van vaste grootte `k`.
 pub fn solve_fixed_k<'g, R>(
@@ -27,7 +25,7 @@ pub fn solve_fixed_k<'g, R>(
 ) -> Solution<'g>
 where
     // `Send + Sync` is nodig om de RNG thread-safe te maken voor parallelle MCTS.
-    R: Rng +?Sized + Send + Sync,
+    R: Rng + ?Sized + Send + Sync,
 {
     // 0. Pre-berekening van benodigde kanten voor haalbaarheid.
     let max_possible_edges = if k > 1 { k * (k - 1) / 2 } else { 0 };
@@ -68,8 +66,18 @@ where
                 let mut best_v_cand = Vec::new();
                 let s_bitset = s.bitset();
                 for v_out in 0..graph.n() {
-                    if!s_bitset[v_out] {
-                        let gain = (graph.neigh_row(v_out) & s_bitset).count_ones() as isize;
+                    if !s_bitset[v_out] {
+                        
+                        // CORRECTIE (E0369): De `&`-operator wordt vervangen door een handmatige
+                        // en performante intersectie-telling via iterators.
+                        let gain = graph
+                            .neigh_row(v_out)
+                            .iter()
+                            .by_vals()
+                            .zip(s_bitset.iter().by_vals())
+                            .filter(|&(a, b)| a && b)
+                            .count() as isize;
+
                         if gain > best_gain {
                             best_gain = gain;
                             best_v_cand.clear();
@@ -124,8 +132,8 @@ where
                 } else {
                     // Standaard TSQC diversificatie
                     // Correctie voor TSQC-01: gebruik absolute, afgetopte deficit `I`.
-                    let I = needed_edges.saturating_sub(cur.edges()).min(10);
-                    let p_heavy = ((I as f64 + 2.0) / (k as f64)).min(0.1);
+                    let i = needed_edges.saturating_sub(cur.edges()).min(10);
+                    let p_heavy = ((i as f64 + 2.0) / (k as f64)).min(0.1);
                     if rng.gen_bool(p_heavy) {
                         heavy_perturbation(&mut cur, &mut tabu, rng, p, &mut freq_mem);
                     } else {

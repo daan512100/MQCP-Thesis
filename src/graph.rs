@@ -31,6 +31,7 @@ impl Graph {
     pub fn from_edge_list(n: usize, edges: &[(usize, usize)]) -> Self {
         let mut g = Self::with_vertices(n);
         for &(u, v) in edges {
+            // Boundary check om panics te voorkomen bij ongeldige edge lists.
             if u < n && v < n {
                 g.add_edge(u, v);
             }
@@ -47,7 +48,7 @@ impl Graph {
         for line_result in io::BufReader::new(reader).lines() {
             let line = line_result?;
             let line = line.trim();
-            
+
             if line.is_empty() || line.starts_with('c') {
                 continue;
             }
@@ -59,8 +60,8 @@ impl Graph {
 
             match parts[0] {
                 "p" if parts.len() >= 4 && parts[1] == "edge" => {
-                    // CORRECTIE: Parse de *individuele onderdelen* (parts[2], parts[3])
-                    // en vergelijk het juiste onderdeel (parts[1]) met "edge".
+                    // CORRECTIE: Parse de individuele onderdelen (parts[2], parts[3])
+                    // van de vector, niet de vector zelf.
                     n = parts[2].parse().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                     let m_expected: usize = parts[3].parse().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                     edges.reserve(m_expected);
@@ -73,7 +74,7 @@ impl Graph {
                     // CORRECTIE: Parse de individuele onderdelen (parts[1], parts[2]).
                     let u: usize = parts[1].parse().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                     let v: usize = parts[2].parse().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                    
+
                     if u > 0 && v > 0 && u <= n && v <= n {
                         edges.push((u - 1, v - 1)); // DIMACS is 1-based, wij zijn 0-based
                     } else {
@@ -107,7 +108,7 @@ impl Graph {
 
     /// Geeft een onveranderlijke slice van de adjacency-rij voor knoop `v`.
     #[inline]
-    pub fn neigh_row(&self, v: usize) -> &BitSlice {
+    pub fn neigh_row(&self, v: usize) -> &bitvec::slice::BitSlice {
         &self.adj[v]
     }
 
