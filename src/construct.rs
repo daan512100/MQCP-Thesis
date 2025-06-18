@@ -3,7 +3,6 @@
 //! Heuristieken voor het construeren van een initiële subset `S`.
 //! Implementeert de "Greedy random heuristic" zoals beschreven in
 //! `ScriptiePaper.pdf`, Sectie 3.3.
-
 use crate::{graph::Graph, solution::Solution};
 use rand::seq::SliceRandom;
 use rand::Rng;

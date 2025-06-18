@@ -1,22 +1,23 @@
-// Bestand: src/restart.rs
+// src/restart.rs
 //!
-///! Implementeert de multi-start Tabu Search voor een vaste `k` (`solve_fixed_k`),
-///! met het exacte long-term frequentiegeheugen volgens Sectie 3.5 van ScriptiePaper.pdf.
+//! Implementeert de multi-start Tabu Search voor een vaste `k` (`solve_fixed_k`),
+//! met het exacte long-term frequentiegeheugen volgens Sectie 3.5 van ScriptiePaper.pdf.
 
 use crate::{
     construct::greedy_random_k,
     diversify::{heavy_perturbation, mild_perturbation},
-    freq::{add_counted},
+    freq::add_counted,
     lns::apply_lns,
     mcts::MctsTree,
     neighbour::improve_once,
     params::Params,
     solution::Solution,
     tabu::DualTabu,
-    graph::Graph,
+    graph::Graph, // Zorg dat Graph geïmporteerd is als dat nodig is
 };
 use rand::seq::SliceRandom;
 use rand::Rng;
+use std::time::Instant; // NIEUWE IMPORT: Voor het bijhouden van de tijd
 
 /// Zoekt naar een `γ`-quasi-clique van vaste grootte `k`,
 /// met long-term frequentiegeheugen conform Sectie 3.5:
@@ -26,7 +27,7 @@ pub fn solve_fixed_k<'g, R>(
     k: usize,
     rng: &mut R,
     p: &Params,
-) -> Solution<'g>
+) -> (Solution<'g>, bool) // AANGEPAST retourtype: (Solution, is_timed_out)
 where
     R: Rng + ?Sized + Send + Sync,
 {
@@ -34,8 +35,12 @@ where
     let max_possible_edges = if k > 1 { k * (k - 1) / 2 } else { 0 };
     let needed_edges = (p.gamma_target * max_possible_edges as f64).ceil() as usize;
     if max_possible_edges < needed_edges {
-        return Solution::new(graph);
+        return (Solution::new(graph), false); // Niet timed out
     }
+
+    // Timer initialisatie
+    let start_time = Instant::now();
+    let mut is_timed_out = false;
 
     // Long-term frequency memory per vertex (gₙ(v)), init op nul.
     let mut freq_mem = vec![0usize; graph.n()];
@@ -45,6 +50,12 @@ where
 
     // Buitenste restart-lus
     while total_moves < p.max_iter {
+        // Timeout check aan het begin van elke grote iteratie
+        if p.max_time_seconds > 0.0 && start_time.elapsed().as_secs_f64() >= p.max_time_seconds {
+            is_timed_out = true;
+            break; // Stop als timeout bereikt is
+        }
+
         // 1. INITIALISATIE OPLOSSING
         let mut cur = if best_global.size() == 0 {
             // Eerste run: standaard greedy-random (frequenties nog niet gebruikt)
@@ -54,18 +65,24 @@ where
             let min_f = *freq_mem.iter().min().unwrap_or(&0);
             let seed_candidates: Vec<usize> =
                 (0..graph.n()).filter(|&v| freq_mem[v] == min_f).collect();
-
             let mut s = Solution::new(graph);
             if let Some(&seed_node) = seed_candidates.choose(rng) {
                 add_counted(&mut s, seed_node, &mut freq_mem);
             } else {
-                // Fallback
+                // Fallback (als graph.n() == 0, is dit al afgehandeld, maar voor de zekerheid)
+                if graph.n() == 0 { return (best_global, is_timed_out); }
                 let v = rng.gen_range(0..graph.n());
                 add_counted(&mut s, v, &mut freq_mem);
             }
 
             // Greedy aanvulling met secundaire tie-break op freq_mem
             while s.size() < k {
+                // Timeout check in innerlijke lus voor snellere respons
+                if p.max_time_seconds > 0.0 && start_time.elapsed().as_secs_f64() >= p.max_time_seconds {
+                    is_timed_out = true;
+                    // Retourneer de huidige beste oplossing als de run afbreekt door timeout
+                    return (best_global, is_timed_out);
+                }
                 let mut best_gain = isize::MIN;
                 let mut best_v_cand = Vec::new();
                 let s_bitset = s.bitset();
@@ -90,7 +107,7 @@ where
                 if best_v_cand.is_empty() {
                     break;
                 }
-                // TSQC-05: secondaires tie-breaking via long-term freq
+                // TSQC-05: secondaire tie-breaking via long-term freq
                 let min_freq = best_v_cand.iter().map(|&v| freq_mem[v]).min().unwrap_or(0);
                 let filtered: Vec<usize> = best_v_cand
                     .into_iter()
@@ -104,7 +121,6 @@ where
             }
             s
         };
-
         // 2. INITIALISATIE TABU
         let mut tabu = DualTabu::new(graph.n(), p.tenure_u, p.tenure_v);
         tabu.update_tenures(cur.size(), cur.edges(), p.gamma_target, rng);
@@ -114,6 +130,12 @@ where
 
         // 3. LOKALE ZOEKTOCHT (intensificatie/diversificatie)
         while stagnation < p.stagnation_iter && total_moves < p.max_iter {
+            // Timeout check in lokale zoektocht
+            if p.max_time_seconds > 0.0 && start_time.elapsed().as_secs_f64() >= p.max_time_seconds {
+                is_timed_out = true;
+                break; // Stop als timeout bereikt is
+            }
+
             let moved = improve_once(&mut cur, &mut tabu, best_global_rho, &mut freq_mem, p, rng);
             total_moves += 1;
             if moved {
@@ -126,7 +148,8 @@ where
                 best_run = cur.clone();
             }
             if best_run.is_gamma_feasible(p.gamma_target) {
-                return best_run;
+                // Return de beste haalbare oplossing, en of het timed out is
+                return (best_run, is_timed_out); 
             }
 
             // 3b. Diversificatie bij stagnatie
@@ -153,9 +176,8 @@ where
             best_global = best_run.clone();
             best_global_rho = best_global.density();
         }
-
-        // uitsluitend via add_counted/remove_counted en perturbaties gehanteerd.
     }
 
-    best_global
+    // Retourneer de beste oplossing en de timeout status aan het einde van de main loop
+    (best_global, is_timed_out) 
 }

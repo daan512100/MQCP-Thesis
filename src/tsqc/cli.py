@@ -1,178 +1,209 @@
-# Bestand: tsqc/cli.py
+# src/tsqc/cli.py
+# VOLLEDIG HERSCHREVEN
 """
-Command Line Interface voor TSQC:
-- `solve`       : lost een γ-quasi-clique op (fixed-k of max-k)
-- `benchmark`   : voert batch-benchmarks uit
-- `gridsearch`  : voert grid-search uit voor MCTS-parameters
-- `predefined`  : voert vooraf gedefinieerde benchmark-cases uit
+Command Line Interface voor de TSQC Oplosser.
+Dit bestand is het centrale toegangspunt voor alle acties. Het gebruikt Typer
+voor een robuuste en gebruiksvriendelijke interface en de Reporter-klasse voor
+rijke, informatieve output.
+Beschikbare commando's:
+- `solve`: Lost een enkele instantie op met gespecificeerde parameters.
+- `run-benchmarks`: Voert de vooraf gedefinieerde set van benchmarks uit
+  (uit benchmark_cases.py) en rapporteert de voortgang en resultaten live.
 """
-import os
-import typer
-from typing import Optional, List, Union
+import time
 from pathlib import Path
+from typing import Optional
 
-from tsqc.api import solve_fixed, solve_max
-from tsqc.config import get_benchmark_config, get_grid_config
-from tsqc.benchmarks import run_all, run_predefined
-from tsqc.grid_search import grid_search
+import typer
 
-app = typer.Typer(help="TSQC CLI: solve, benchmark, gridsearch en predefined benchmarks")
+# Importeer de kerncomponenten van ons Python-pakket.
+# Deze imports verwijzen naar de (straks verbeterde) API-laag en de nieuwe reporter.
+from tsqc.api import solve_fixed, solve_max, parse_dimacs, SolutionData
+from tsqc.reporter import Reporter
+from tsqc.benchmark_cases import BENCHMARK_CASES, BenchmarkCase
+
+# Initialiseer de Typer-app voor het definiëren van commando's
+# en de Reporter-klasse voor alle output.
+app = typer.Typer(
+    name="tsqc",
+    help="Een robuuste oplosser voor het Maximum Quasi-Clique Probleem, met een Rust-core.",
+    add_completion=False,
+    no_args_is_help=True,
+    rich_markup_mode="markdown", # Activeer rijke opmaak voor help-teksten
+)
+reporter = Reporter()
+
 
 @app.command()
 def solve(
-    instance: Path = typer.Argument(..., help="Pad naar DIMACS .clq-bestand"),
+    instance: Path = typer.Argument(
+        ...,  # '...' betekent dat dit argument verplicht is.
+        help="Pad naar het DIMACS .clq-instantiebestand.",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        show_default=False,
+    ),
+    gamma: float = typer.Option(
+        0.9, "-g", "--gamma", help="Dichtheidsdrempel γ (een getal tussen 0 en 1)."
+    ),
     k: Optional[int] = typer.Option(
-        None, "-k", "--k", help="Target clique-grootte (fixed-k). Als afwezig, gaat in max-k mode."),
-    gamma: float = typer.Option(
-        0.85, "-g", "--gamma", help="Dichtheidsdrempel γ (0 < γ ≤ 1)"),
-    seed: int = typer.Option(
-        42, "-s", "--seed", help="Random seed voor reproducibiliteit"),
-    runs: int = typer.Option(
-        1, "-r", "--runs", help="Aantal runs (neem de beste oplossing)"),
-    threads: Optional[int] = typer.Option(
-        None, "--threads", help="Aantal threads voor parallelle uitvoering (zet RAYON_NUM_THREADS)"),
-    use_mcts: bool = typer.Option(
-        False, "--mcts", help="Gebruik MCTS-LNS voor intensificatie"),
-    mcts_budget: int = typer.Option(
-        100, "--mcts-budget", help="MCTS call-budget (aantal iteraties)"),
-    mcts_uct: float = typer.Option(
-        1.414, "--mcts-uct", help="UCT-exploratie-parameter voor MCTS"),
-    mcts_depth: int = typer.Option(
-        5, "--mcts-depth", help="Diepte-limiet voor MCTS"),
-    lns_repair_depth: int = typer.Option(
-        10, "--lns-depth", help="Repair-diepte voor LNS na MCTS"),
-):
-    """
-    Los een γ-quasi-clique op. Voor fixed-k geef je -k; anders max-k.
-    """
-    if threads is not None:
-        os.environ["RAYON_NUM_THREADS"] = str(threads)
-
-    if k is not None:
-        res = solve_fixed(
-            instance_path=str(instance),
-            k=k,
-            gamma=gamma,
-            seed=seed,
-            runs=runs,
-            use_mcts=use_mcts,
-            mcts_budget=mcts_budget,
-            mcts_uct=mcts_uct,
-            mcts_depth=mcts_depth,
-            lns_repair_depth=lns_repair_depth,
-        )
-    else:
-        res = solve_max(
-            instance_path=str(instance),
-            gamma=gamma,
-            seed=seed,
-            runs=runs,
-            use_mcts=use_mcts,
-            mcts_budget=mcts_budget,
-            mcts_uct=mcts_uct,
-            mcts_depth=mcts_depth,
-            lns_repair_depth=lns_repair_depth,
-        )
-    typer.echo(res)
-
-@app.command()
-def benchmark(
-    instances: Path = typer.Option(
-        ..., "-i", "--instances", help="Directory met .clq-bestanden"
+        None, "-k", "--k", help="Doelgrootte voor fixed-k modus. Indien afwezig, wordt max-k modus gebruikt."
     ),
-    ks: List[int] = typer.Option(
-        ..., "-k", "--ks", help="Lijst met target-k waarden voor fixed-k mode"
-    ),
-    gamma: float = typer.Option(
-        0.85, "-g", "--gamma", help="Dichtheidsdrempel γ"
-    ),
-    mode: str = typer.Option(
-        "fixed", "-m", "--mode", help="Mode: 'fixed' of 'max'"
-    ),
-    time_limit: Optional[float] = typer.Option(
-        None, "-t", "--time-limit", help="Time limit per run (seconden)"
-    ),
-    output: Path = typer.Option(
-        Path("benchmarks.csv"), "-o", "--output", help="CSV output pad"
+    seed: int = typer.Option(42, "-s", "--seed", help="Random seed voor de oplosser."),
+    use_mcts: bool = typer.Option(False, "--mcts", help="Schakel MCTS-LNS diversificatie in."),
+    # NIEUW: Timeout parameter voor de CLI 'solve' opdracht
+    timeout_seconds: float = typer.Option(
+        0.0, "--timeout", "-t", 
+        help="Maximale tijd in seconden voor de run. 0.0 = geen timeout."
     ),
 ):
     """
-    Voer batch-benchmarks uit over alle .clq-bestanden in een map.
-
-    Geef direct de instances-map, k-waarden, gamma, mode, time_limit en output.
+    Lost een enkele quasi-clique instantie op (fixed-k of max-k).
     """
-    run_all(
-        inst_dir=str(instances),
-        ks=ks,
-        gamma=gamma,
-        mode=mode,
-        time_limit=time_limit,
-        output=str(output),
-    )
+    # Bundel de parameters voor een nette rapportage via de reporter.
+    params = {"instance": instance.name, "gamma": gamma, "seed": seed, "use_mcts": use_mcts}
+    if timeout_seconds > 0:
+        params["timeout_seconds"] = timeout_seconds
+    
+    reporter.console.print(f"Starting solver for [cyan]{instance.name}[/cyan]...")
+    
+    try:
+        if k:
+            # Als k is meegegeven, draai in fixed-k modus.
+            params["mode"] = "fixed-k"
+            params["k"] = k
+            result = solve_fixed(
+                instance, 
+                k=k, 
+                gamma=gamma, 
+                seed=seed, 
+                use_mcts=use_mcts,
+                max_time_seconds=timeout_seconds # Geef timeout door
+            )
+        else:
+            # Anders, draai in max-k modus.
+            params["mode"] = "max-k"
+            result = solve_max(
+                instance, 
+                gamma=gamma, 
+                seed=seed, 
+                use_mcts=use_mcts,
+                max_time_seconds=timeout_seconds # Geef timeout door
+            )
+        
+        # Laat de reporter het resultaat tonen in een nette tabel.
+        reporter.report_solve_result(result, params)
+    except Exception as e:
+        reporter.console.print(f"[bold red]Er is een fout opgetreden tijdens het oplossen: {e}[/bold red]")
 
-@app.command()
-def gridsearch(
-    config: Path = typer.Option(
-        Path("tsqc.toml"), "-c", "--config", help="Pad naar configuratie TOML"),
-    time_limit: Optional[float] = typer.Option(
-        None, "-t", "--time-limit", help="Time limit per run (optioneel, niet doorgegeven aan Rust)"),
-    output: Path = typer.Option(
-        Path("grid_results.json"), "-o", "--output", help="Pad voor JSON output"),
+
+@app.command(name="run-benchmarks")
+def run_predefined_benchmarks(
+    instances_dir: Path = typer.Argument(
+        ...,
+        help="Pad naar de map met de .clq benchmark-bestanden.",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        show_default=False,
+    ),
+    runs: int = typer.Option(10, "-r", "--runs", help="Aantal onafhankelijke runs per benchmark-case."),
+    seed: int = typer.Option(99, "-s", "--seed", help="Basis-seed voor de reeks van runs."),
+    use_mcts: bool = typer.Option(False, "--mcts", help="Schakel MCTS-LNS diversificatie in voor alle runs."),
+    mcts_budget: int = typer.Option(100, help="MCTS: Aantal simulatieruns (budget)."),
+    mcts_uct: float = typer.Option(1.414, help="MCTS: UCT exploratieconstante."),
+    mcts_depth: int = typer.Option(5, help="MCTS: Maximale diepte van de zoekboom."),
+    lns_repair_depth: int = typer.Option(10, help="LNS: Aantal verfijningsstappen in de herstelfase."),
+    # NIEUW: Timeout parameter voor de CLI benchmark opdracht
+    timeout_seconds: float = typer.Option(
+        0.0, "--timeout", "-t", 
+        help="Maximale tijd in seconden per run. 0.0 = geen timeout."
+    ),
 ):
     """
-    Voer grid-search uit voor MCTS-parameters volgens de 'grid'-sectie in de TOML.
+    Voert de volledige, vooraf gedefinieerde benchmark-suite uit.
+    Dit commando doorloopt alle cases gedefinieerd in `benchmark_cases.py`,
+    voert voor elke case meerdere runs uit met unieke seeds, en rapporteert
+    de voortgang en resultaten live in de terminal.
     """
-    bench_cfg = get_benchmark_config(config)
-    grid_cfg = get_grid_config(config)
-    grid_search(
-        inst_dir=bench_cfg.instances,
-        gamma=bench_cfg.gamma,
-        grid={"C": grid_cfg.C, "alpha": grid_cfg.alpha, "iters": grid_cfg.iters},
-        time_limit=time_limit,
-        output_json=str(output),
-    )
+    overall_start_time = time.perf_counter()
+    total_cases = len(BENCHMARK_CASES)
+    reporter.console.print(f"[bold]Benchmark suite gestart: {total_cases} cases, {runs} runs per case.[/bold]")
+    if timeout_seconds > 0:
+        reporter.console.print(f"[bold yellow]Timeout per run ingesteld op: {timeout_seconds:.1f} seconden.[/bold yellow]")
+    reporter.console.print("-" * 70)
 
-@app.command()
-def predefined(
-    inst_dir: Path = typer.Argument(..., help="Directory met .clq-instanties"),
-    time_limit: Optional[float] = typer.Option(
-        None, "-t", "--time-limit", help="Time limit per run"),
-    output: Path = typer.Option(
-        Path("benchmarks_predefined.csv"), "-o", "--output", help="CSV output path"),
-    runs: int = typer.Option(
-        1, "--runs", "-r", help="Aantal runs per instance"),
-    seed: int = typer.Option(
-        42, "--seed", "-s", help="Random seed"),
-    threads: Optional[int] = typer.Option(
-        None, "--threads", help="Aantal threads (zet RAYON_NUM_THREADS)"),
-    use_mcts: bool = typer.Option(
-        False, "--mcts", help="Gebruik MCTS-LNS"),
-    mcts_budget: int = typer.Option(
-        100, "--mcts-budget", help="MCTS call-budget"),
-    mcts_uct: float = typer.Option(
-        1.414, "--mcts-uct", help="UCT-exploratie-parameter"),
-    mcts_depth: int = typer.Option(
-        5, "--mcts-depth", help="Diepte-limiet voor MCTS"),
-    lns_repair_depth: int = typer.Option(
-        10, "--lns-depth", help="Repair-diepte voor LNS"),
-):
-    """
-    Voer de vooraf gedefinieerde BENCHMARK_CASES uit met de juiste γ en target-k.
-    """
-    if threads is not None:
-        os.environ["RAYON_NUM_THREADS"] = str(threads)
-    run_predefined(
-        inst_dir=str(inst_dir),
-        time_limit=time_limit,
-        output=str(output),
-        runs=runs,
-        seed=seed,
-        use_mcts=use_mcts,
-        mcts_budget=mcts_budget,
-        mcts_uct=mcts_uct,
-        mcts_depth=mcts_depth,
-        lns_repair_depth=lns_repair_depth,
-    )
+    for i, case in enumerate(BENCHMARK_CASES):
+        instance_path = instances_dir / case.instance
+        
+        # --- Validatie van de benchmark case ---
+        if not instance_path.exists():
+            reporter.console.print(f"[bold red]OVERGESLAGEN ({i+1}/{total_cases}):[/bold red] Bestand niet gevonden: {instance_path}")
+            reporter.console.print("-" * 70)
+            continue
+
+        try:
+            n, m = parse_dimacs(instance_path)
+        except Exception as e:
+            reporter.console.print(f"[bold red]OVERGESLAGEN ({i+1}/{total_cases}):[/bold red] Kon '{case.instance}' niet parsen: {e}")
+            reporter.console.print("-" * 70)
+            continue
+
+        # --- Uitvoering van de runs voor deze case ---
+        reporter.report_case_start(case, n, m)
+        
+        best_solution_for_case: Optional[SolutionData] = None
+        case_start_time = time.perf_counter()
+
+        # Gebruik de progressiebalk van de reporter voor live feedback per run.
+        progress_ctx = reporter.create_progress_bar()
+        with progress_ctx as progress:
+            task = progress.add_task(f"[cyan]Runs voor {case.instance}", total=runs)
+
+            for run_idx in range(1, runs + 1):
+                # Elke run krijgt een unieke, reproduceerbare seed.
+                run_seed = seed + run_idx - 1
+                progress.update(task, description=f"[cyan]Run {run_idx}/{runs} (seed={run_seed})")
+                
+                try:
+                    # Roep de API aan voor een ENKELE run. De CLI-loop beheert het totaal.
+                    solution = solve_fixed(
+                        instance_path=instance_path,
+                        k=case.k,
+                        gamma=case.gamma,
+                        seed=run_seed,
+                        use_mcts=use_mcts,
+                        runs=1,  # Belangrijk: de Rust-laag doet 1 run, de Python-lus herhaalt.
+                        mcts_budget=mcts_budget,
+                        mcts_uct=mcts_uct,
+                        mcts_depth=mcts_depth,
+                        lns_repair_depth=lns_repair_depth,
+                        max_time_seconds=timeout_seconds, # Geef timeout door
+                    )
+                    
+                    # Rapporteer het resultaat van deze specifieke run.
+                    reporter.report_run_result(run_idx, run_seed, solution, case.gamma)
+                   
+                    # Update de beste oplossing voor deze case (hoogste dichtheid telt).
+                    if best_solution_for_case is None or solution.density > best_solution_for_case.density:
+                        best_solution_for_case = solution
+
+                except Exception as e:
+                    reporter.report_run_error(run_idx, run_seed, str(e))
+                
+                progress.advance(task)
+
+        # --- Rapportage van de samenvatting voor deze case ---
+        case_total_time = time.perf_counter() - case_start_time
+        reporter.report_case_summary(best_solution_for_case, case_total_time)
+        reporter.console.print("-" * 70)
+
+    overall_total_time = time.perf_counter() - overall_start_time
+    reporter.console.print(f"[bold green]✨ Alle {total_cases} benchmark cases zijn voltooid in {overall_total_time:.2f} seconden. ✨[/bold green]")
+
 
 if __name__ == "__main__":
     app()

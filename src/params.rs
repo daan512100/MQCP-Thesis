@@ -1,3 +1,4 @@
+// src/params.rs
 //! src/params.rs
 //!
 //! Bundelt alle afstembare parameters voor de TSQC-oplosser.
@@ -28,6 +29,9 @@ pub struct Params {
     pub mcts_max_depth: usize,
     #[pyo3(get, set)]
     pub lns_repair_depth: usize,
+    // NIEUW VELD: Maximale looptijd in seconden voor een enkele run. 0.0 betekent geen limiet.
+    #[pyo3(get, set)]
+    pub max_time_seconds: f64,
 }
 
 #[pymethods]
@@ -45,6 +49,8 @@ impl Params {
         mcts_exploration_const: f64,
         mcts_max_depth: usize,
         lns_repair_depth: usize,
+        // NIEUWE PARAMETER VOOR CONSTRUCTOR
+        max_time_seconds: f64, 
     ) -> Self {
         Self {
             gamma_target,
@@ -57,6 +63,8 @@ impl Params {
             mcts_exploration_const,
             mcts_max_depth,
             lns_repair_depth,
+            // INITIALISATIE VAN NIEUWE PARAMETER
+            max_time_seconds,
         }
     }
 }
@@ -76,6 +84,8 @@ impl Default for Params {
             mcts_exploration_const: 1.414,
             mcts_max_depth: 5,
             lns_repair_depth: 10,
+            // NIEUWE DEFAULT WAARDE: 0.0 (geen timeout)
+            max_time_seconds: 0.0, 
         }
     }
 }
