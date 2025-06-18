@@ -45,8 +45,7 @@ impl DualTabu {
     }
 
     /// Herberekent `Tu` en `Tv` op basis van de huidige staat van de oplossing.
-    /// Dit implementeert de formules uit Sectie 3.4.3, waarmee de bug
-    /// `TSQC-03` is opgelost.
+    /// Dit implementeert de formules uit Sectie 3.4.3.
     pub fn update_tenures<R: Rng + ?Sized>(
         &mut self,
         size_s: usize,
@@ -64,14 +63,26 @@ impl DualTabu {
         let needed_edges = (gamma * max_possible_edges as f64).ceil() as usize;
         let l = needed_edges.saturating_sub(edges).min(10);
         let c = (size_s / 40).max(6);
-        // TSQC-03: Gebruik inclusieve Random(c) volgens de paper: [0..=c]
-        let rand_u = if c > 1 { rng.gen_range(0..=c) } else { 0 };
+
+        // =================================================================================
+        // CORRECTIE (Afwijking 3): De range voor de random-generator is aangepast.
+        //
+        // REDEN: `ScriptiePaper.pdf`, Sectie 3.4.3, definieert:
+        //   Tu = l + Random(C-1)
+        //   Tv = 0.6*l + Random(0.6*C-1)
+        // De notatie `Random(Y)` genereert een getal in [0, ..., Y]. `Random(C-1)` betekent
+        // dus een getal in de range [0, ..., C-1].
+        // De oorspronkelijke code gebruikte `rng.gen_range(0..=c)`, wat een getal in
+        // de range [0, ..., C] genereerde. Dit was een 'off-by-one' afwijking.
+        // We passen de range aan naar `0..c` (exclusief) om dit te corrigeren.
+        // =================================================================================
+        let rand_u = if c > 1 { rng.gen_range(0..c) } else { 0 }; // Exclusieve range [0, c-1]
         self.tu = (l + rand_u).max(1);
 
         let base_v = (0.6 * l as f64).floor() as usize;
         let c6 = (0.6 * c as f64).floor() as usize;
-        // TSQC-03: Gebruik inclusieve Random(c6)
-        let rand_v = if c6 > 1 { rng.gen_range(0..=c6) } else { 0 };
+        
+        let rand_v = if c6 > 1 { rng.gen_range(0..c6) } else { 0 }; // Exclusieve range [0, c6-1]
         self.tv = (base_v + rand_v).max(1);
     }
 

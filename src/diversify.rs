@@ -25,7 +25,7 @@ fn count_intersecting_ones(a: &BitSlice, b: &BitSlice) -> usize {
 /// Zware perturbatie ("grote schok"):
 /// 1. Verwijder willekeurige u ∈ S.
 /// 2. Bereken drempel h = floor(0.85 * γ * k) als dn ≤ 0.5, anders floor(γ * k).
-/// 3. Kies v ∉ S met |N(v) ∩ S| ≤ h.
+/// 3. Kies v ∉ S met |N(v) ∩ S| < h.
 /// 4. Voeg v toe.
 /// 5. Update long-term freq via helper.
 /// 6. Reset tabu en update tenures.
@@ -65,20 +65,30 @@ pub fn heavy_perturbation<'g, R>(
         (p.gamma_target * (k as f64)).floor() as usize
     };
 
-    // 3. Verzamel kandidaten v ∉ S met |N(v) ∩ S| ≤ h.
+    // 3. Verzamel kandidaten v ∉ S met |N(v) ∩ S| < h.
     let sol_bitset = sol.bitset();
     let mut candidates: Vec<usize> = (0..graph.n())
+        // =================================================================================
+        // CORRECTIE (Afwijking 1): De vergelijkingsoperator is gewijzigd van `<=` naar `<`.
+        //
+        // REDEN: `ScriptiePaper.pdf`, Sectie 3.4.2, specificeert expliciet:
+        // "...select a vertex v from V\S (v ∈ V\S) such that d(v) < h..."
+        // De oorspronkelijke code gebruikte `d(v) <= h`, wat een afwijking was.
+        // Deze aanpassing zorgt ervoor dat de implementatie nu exact conform het paper is.
+        // =================================================================================
         .filter(|&v| !sol_bitset[v]
-            && count_intersecting_ones(graph.neigh_row(v), sol_bitset) <= h)
+            && count_intersecting_ones(graph.neigh_row(v), sol_bitset) < h)
         .collect();
 
     // Fallback: als geen kandidaten, kies v met minimale out-degree.
+    // Dit is een robuustheidsmechanisme voor het geval de `< h` conditie geen kandidaten oplevert.
     if candidates.is_empty() {
         let min_deg_out = (0..graph.n())
             .filter(|&v| !sol_bitset[v])
             .map(|v| count_intersecting_ones(graph.neigh_row(v), sol_bitset))
             .min()
             .unwrap_or(0);
+        
         candidates = (0..graph.n())
             .filter(|&v| !sol_bitset[v]
                 && count_intersecting_ones(graph.neigh_row(v), sol_bitset) == min_deg_out)
@@ -101,6 +111,10 @@ pub fn heavy_perturbation<'g, R>(
 /// 3. Verwissel u en v.
 /// 4. Update long-term freq.
 /// 5. Reset tabu en update tenures.
+///
+/// OPMERKING: Zoals geanalyseerd, is de *aanroep* van deze functie vanuit `restart.rs`
+/// niet conform het paper. De functie zelf blijft voor nu ongewijzigd, in afwachting
+/// van de correctie in `restart.rs`.
 pub fn mild_perturbation<'g, R>(
     sol: &mut Solution<'g>,
     tabu: &mut DualTabu,
@@ -124,6 +138,7 @@ pub fn mild_perturbation<'g, R>(
         .map(|u| count_intersecting_ones(graph.neigh_row(u), sol_bitset))
         .min()
         .unwrap_or(usize::MAX);
+
     let max_out = (0..graph.n())
         .filter(|&v| !sol_bitset[v])
         .map(|v| count_intersecting_ones(graph.neigh_row(v), sol_bitset))
@@ -135,6 +150,7 @@ pub fn mild_perturbation<'g, R>(
         .iter_ones()
         .filter(|&u| count_intersecting_ones(graph.neigh_row(u), sol_bitset) == min_in)
         .collect();
+
     let set_b: Vec<usize> = (0..graph.n())
         .filter(|&v| !sol_bitset[v]
             && count_intersecting_ones(graph.neigh_row(v), sol_bitset) == max_out)
