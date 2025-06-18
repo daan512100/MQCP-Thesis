@@ -1,3 +1,4 @@
+// src/tabu.rs
 //! src/tabu.rs
 //!
 //! Implementeert de dubbele tabu-lijsten met adaptieve duur, zoals
@@ -45,8 +46,10 @@ impl DualTabu {
     }
 
     /// Herberekent `Tu` en `Tv` op basis van de huidige staat van de oplossing.
-    /// Dit implementeert de formules uit Sectie 3.4.3, waarmee de bug
-    /// `TSQC-03` is opgelost.
+    /// Dit implementeert de formules uit Sectie 3.4.3. 
+    ///
+    /// Correctie: De willekeurige component `Random(Y)` genereert een getal in [0, Y]. 
+    /// Dus `Random(C-1)` genereert in [0, C-1].
     pub fn update_tenures<R: Rng + ?Sized>(
         &mut self,
         size_s: usize,
@@ -62,26 +65,29 @@ impl DualTabu {
 
         let max_possible_edges = size_s * (size_s - 1) / 2;
         let needed_edges = (gamma * max_possible_edges as f64).ceil() as usize;
-        let l = needed_edges.saturating_sub(edges).min(10);
-        let c = (size_s / 40).max(6);
-        // TSQC-03: Gebruik inclusieve Random(c) volgens de paper: [0..=c]
-        let rand_u = if c > 1 { rng.gen_range(0..=c) } else { 0 };
+        let l = needed_edges.saturating_sub(edges).min(10); // l = min{(y*k*(k-1)/2)-f(S), 10} 
+        let c = (size_s / 40).max(6); // C = max{k/40], 6} 
+
+        // Correctie: Genereer Random(C-1) als C > 0. `saturating_sub(1)` voorkomt overflow.
+        // Paper: Tu=l+Random(C-1) 
+        let rand_u = if c > 0 { rng.gen_range(0..=c.saturating_sub(1)) } else { 0 };
         self.tu = (l + rand_u).max(1);
 
-        let base_v = (0.6 * l as f64).floor() as usize;
-        let c6 = (0.6 * c as f64).floor() as usize;
-        // TSQC-03: Gebruik inclusieve Random(c6)
-        let rand_v = if c6 > 1 { rng.gen_range(0..=c6) } else { 0 };
+        let base_v = (0.6 * l as f64).floor() as usize; // 0.6 * l 
+        let c6 = (0.6 * c as f64).floor() as usize; // floor(0.6 * C) 
+        // Correctie: Genereer Random(0.6*C-1) als 0.6*C > 0.
+        // Paper: Tv=0.6*l+Random(0.6*C-1) 
+        let rand_v = if c6 > 0 { rng.gen_range(0..=c6.saturating_sub(1)) } else { 0 };
         self.tv = (base_v + rand_v).max(1);
     }
 
-    /// Maakt knoop `v` taboe om te worden toegevoegd voor `tu` iteraties.
+    /// Maakt knoop `v` taboe om te worden toegevoegd voor `tu` iteraties. 
     #[inline]
     pub fn forbid_u(&mut self, v: usize) {
         self.expiry_u[v] = self.iter + self.tu;
     }
 
-    /// Maakt knoop `v` taboe om te worden verwijderd voor `tv` iteraties.
+    /// Maakt knoop `v` taboe om te worden verwijderd voor `tv` iteraties. 
     #[inline]
     pub fn forbid_v(&mut self, v: usize) {
         self.expiry_v[v] = self.iter + self.tv;
