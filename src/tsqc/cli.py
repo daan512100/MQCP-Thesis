@@ -1,15 +1,10 @@
 # src/tsqc/cli.py
-# VOLLEDIG HERSCHREVEN (na refactoring naar Params object en grid search parameters)
+# VOLLEDIG HERSCHREVEN (met import-fix)
 """
 Command Line Interface voor de TSQC Oplosser.
 Dit bestand is het centrale toegangspunt voor alle acties. Het gebruikt Typer
 voor een robuuste en gebruiksvriendelijke interface en de Reporter-klasse voor
 rijke, informatieve output.
-Beschikbare commando's:
-- `solve`: Lost een enkele instantie op met gespecificeerde parameters.
-- `run-benchmarks`: Voert de vooraf gedefinieerde set van benchmarks uit
-  (uit benchmark_cases.py) en rapporteert de voortgang en resultaten live.
-- `grid-search`: Voert een grid search uit over MCTS-parameters.
 """
 import time
 from pathlib import Path
@@ -17,15 +12,15 @@ from typing import Optional, List
 
 import typer
 
-# Importeer de kerncomponenten van ons Python-pakket.
-# Deze imports verwijzen naar de (nu verbeterde) API-laag en de reporter.
-from tsqc.api import solve_fixed, solve_max, parse_dimacs, SolutionData, Params
-from tsqc.reporter import Reporter
-from tsqc.benchmark_cases import BENCHMARK_CASES, BenchmarkCase
-from tsqc.grid_search import run_grid_search
+# --- CORRECTIE HIERONDER ---
+# Gebruik expliciete relatieve imports (met een punt ervoor)
+# om Python te vertellen dat het in dezelfde package-directory moet zoeken.
+from .api import solve_fixed, solve_max, parse_dimacs, SolutionData, Params
+from .reporter import Reporter
+from .benchmark_cases import BENCHMARK_CASES
+from .grid_search import run_grid_search
 
-# Initialiseer de Typer-app voor het definiëren van commando's
-# en de Reporter-klasse voor alle output.
+# Initialiseer de Typer-app en de Reporter-klasse.
 app = typer.Typer(
     name="tsqc",
     help="Een robuuste oplosser voor het Maximum Quasi-Clique Probleem, met een Rust-core.",
@@ -35,6 +30,9 @@ app = typer.Typer(
 )
 reporter = Reporter()
 
+# De rest van de functies (@app.command(), etc.) blijven exact hetzelfde.
+# Je hoeft alleen de import-sectie bovenaan te vervangen.
+# (Hieronder staat de volledige code voor de duidelijkheid)
 
 @app.command()
 def solve(
@@ -153,9 +151,6 @@ def run_predefined_benchmarks(
 ):
     """
     Voert de volledige, vooraf gedefinieerde benchmark-suite uit.
-    Dit commando doorloopt alle cases gedefinieerd in `benchmark_cases.py`,
-    voert voor elke case meerdere runs uit met unieke seeds, en rapporteert
-    de voortgang en resultaten live in de terminal.
     """
     overall_start_time = time.perf_counter()
     total_cases = len(BENCHMARK_CASES)
@@ -223,7 +218,7 @@ def run_predefined_benchmarks(
                         solution = solve_max(instance_path=instance_path, params=current_run_params)
                     
                     reporter.report_run_result(run_idx, run_seed, solution, case.gamma)
-                   
+                    
                     if best_solution_for_case is None or solution.density > best_solution_for_case.density:
                         best_solution_for_case = solution
 
@@ -292,48 +287,38 @@ def grid_search_command(
         help="Lijst van LNS repair diepte waarden om te testen. Meerdere waarden mogelijk.",
         show_default=False,
     ),
-    stagnation_iters: List[int] = typer.Option( # AANGEPAST: Toevoegen als CLI optie voor de grid search
-        [1000], # Standaardwaarde voor de lijst, kan met ... verplicht worden gemaakt
+    stagnation_iters: List[int] = typer.Option(
+        [1000],
         "--stagnation-iter",
         help="Lijst van stagnation iteratie waarden om te testen. Meerdere waarden mogelijk.",
         show_default=True,
     ),
-    # Algemene solver parameters die constant blijven tijdens de grid search
-    # Deze parameters worden NU NIET meer als CLI-opties aangeboden voor grid-search,
-    # omdat ze in 'base_grid_params' gehardcoded zijn of van de stagnation_iters lijst komen.
-    # Als je deze ook wilt variëren in de grid search, dan moet je ze hier opnieuw toevoegen
-    # als List[type] en opnemen in de product() in run_grid_search.
-    # Voor nu zijn ze hier verwijderd omwille van de eenvoud en focus op MCTS/stagnation.
     max_iter: int = typer.Option(100_000_000, help="Maximaal aantal iteraties voor de solver."),
     tenure_u: int = typer.Option(1, help="Tabu tenure voor toevoegen (u)."),
     tenure_v: int = typer.Option(1, help="Tabu tenure voor verwijderen (v)."),
 ):
     """
     Voert een grid search uit om optimale MCTS-LNS parameters te vinden.
-    Test alle combinaties van de opgegeven MCTS-parameters over de gedefinieerde
-    benchmark cases en slaat de resultaten op in een CSV-bestand.
     """
     reporter.console.print("[bold]Starten van de MCTS Grid Search...[/bold]")
     reporter.console.print("Dit kan enige tijd duren, afhankelijk van het aantal combinaties en runs.")
     reporter.console.print("-" * 70)
 
-    # Maak een basis Params object met de algemene solver instellingen die gelden
-    # voor alle runs binnen de grid search, behalve de MCTS parameters zelf.
     base_grid_params = Params(
         gamma_target=0.0,
-        stagnation_iter=0, # Tijdelijk, wordt overschreven door de combinatie waarde in run_grid_search
-        max_iter=max_iter, # Deze komen nu van CLI options als enkele waarde, niet als lijst.
-        tenure_u=tenure_u, # Idem
-        tenure_v=tenure_v, # Idem
-        use_mcts=True, # MCTS is altijd ingeschakeld voor de grid search
-        mcts_budget=0, # Tijdelijk, wordt overschreven in run_grid_search
-        mcts_exploration_const=0.0, # Tijdelijk, wordt overschreven
-        mcts_max_depth=0, # Tijdelijk, wordt overschreven
-        lns_repair_depth=0, # Tijdelijk, wordt overschreven
+        stagnation_iter=0,
+        max_iter=max_iter,
+        tenure_u=tenure_u,
+        tenure_v=tenure_v,
+        use_mcts=True,
+        mcts_budget=0,
+        mcts_exploration_const=0.0,
+        mcts_max_depth=0,
+        lns_repair_depth=0,
         max_time_seconds=timeout_seconds,
-        seed=0, # Tijdelijk, wordt overschreven per run
-        runs=1, # De Python-lus beheert de runs, Rust doet 1 run per aanroep
-        k=None, # Tijdelijk, wordt overschreven per benchmark case
+        seed=0,
+        runs=1,
+        k=None,
     )
 
     run_grid_search(
@@ -346,7 +331,7 @@ def grid_search_command(
         mcts_exploration_consts=mcts_exploration_consts,
         mcts_max_depths=mcts_max_depths,
         lns_repair_depths=lns_repair_depths,
-        stagnation_iters=stagnation_iters, # AANGEPAST: Geef de stagnation_iters lijst door
+        stagnation_iters=stagnation_iters,
         reporter=reporter,
         base_params=base_grid_params,
     )

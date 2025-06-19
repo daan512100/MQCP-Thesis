@@ -1,4 +1,5 @@
-//! src/mcts.rs
+// src/mcts.rs
+//!
 //! Implementeert de Monte Carlo Tree Search.
 
 use crate::{graph::Graph, lns::apply_lns, params::Params, solution::Solution};
@@ -15,9 +16,11 @@ fn count_intersecting_ones(a: &BitSlice, b: &BitSlice) -> usize {
     a.iter().by_vals().zip(b.iter().by_vals()).filter(|&(x, y)| x && y).count()
 }
 
-struct MctsNode {
+// VERBETERD: MctsNode is nu publiek voor gebruik in unit tests en de merge-logica.
+#[derive(Clone)]
+pub struct MctsNode {
     parent: Option<usize>,
-    children: Vec<usize>,
+    children: HashMap<usize, usize>, // VERBETERD: HashMap<vertex_removed, node_idx> voor snelle lookups.
     visits: u32,
     total_reward: f64,
     vertex_removed: Option<usize>,
@@ -25,7 +28,8 @@ struct MctsNode {
 }
 
 pub struct MctsTree<'g> {
-    nodes: Vec<MctsNode>,
+    // VERBETERD: nodes is nu publiek voor gebruik in unit tests.
+    pub nodes: Vec<MctsNode>,
     initial_solution: Solution<'g>,
     graph: &'g Graph,
     params: &'g Params,
@@ -36,7 +40,7 @@ impl<'g> MctsTree<'g> {
         MctsTree {
             nodes: vec![MctsNode {
                 parent: None,
-                children: Vec::new(),
+                children: HashMap::new(), // Gebruik HashMap
                 visits: 0,
                 total_reward: 0.0,
                 vertex_removed: None,
@@ -48,29 +52,32 @@ impl<'g> MctsTree<'g> {
         }
     }
 
-    pub fn run<R: Rng + ?Sized + Send + Sync>(&mut self, rng: &mut R) -> Vec<usize> {
+    pub fn run<R: Rng +?Sized + Send + Sync>(&mut self, rng: &mut R) -> Vec<usize> {
         #[cfg(feature = "parallel_mcts")]
         {
-            let threads = rayon::current_num_threads();
+            let threads = rayon::current_num_threads().max(1);
             let budget_per_thread = self.params.mcts_budget.max(threads) / threads;
 
-            if budget_per_thread == 0 {
+            if budget_per_thread < 1 {
+                // Fallback voor een zeer klein budget
                 self.run_simulations(self.params.mcts_budget, rng);
                 return self.extract_best_sequence();
             }
 
             let results: Vec<MctsTree> = (0..threads)
-                .into_par_iter()
-                .map(|_| {
+               .into_par_iter()
+               .map(|_| {
+                    // Elke thread krijgt zijn eigen RNG en boom
                     let mut local_rng = rand::thread_rng();
                     let mut local_tree = MctsTree::new(&self.initial_solution, self.graph, self.params);
                     local_tree.run_simulations(budget_per_thread, &mut local_rng);
                     local_tree
                 })
-                .collect();
+               .collect();
 
-            for tree in results {
-                self.merge_from(&tree);
+            // Voeg alle resultaten samen in de hoofdboom
+            for other_tree in results {
+                self.merge_from(&other_tree);
             }
 
             return self.extract_best_sequence();
@@ -83,11 +90,12 @@ impl<'g> MctsTree<'g> {
         }
     }
 
-    fn run_simulations<R: Rng + ?Sized>(&mut self, budget: usize, rng: &mut R) {
+    fn run_simulations<R: Rng +?Sized>(&mut self, budget: usize, rng: &mut R) {
         for _ in 0..budget {
             let (leaf_idx, removal_path) = self.select();
             let new_node_idx = self.expand(leaf_idx, &removal_path, rng);
-            let reward = self.rollout(&self.nodes[new_node_idx], rng);
+            // De rollout wordt nu uitgevoerd vanaf de *nieuwe* of *bestaande* leaf node.
+            let reward = self.rollout(new_node_idx, rng);
             self.backpropagate(new_node_idx, reward);
         }
     }
@@ -95,28 +103,33 @@ impl<'g> MctsTree<'g> {
     fn select(&self) -> (usize, Vec<usize>) {
         let mut current_idx = 0;
         let mut path = Vec::new();
-        while !self.nodes[current_idx].children.is_empty() {
-            let parent_visits = self.nodes[current_idx].visits;
-            let best_child = *self.nodes[current_idx]
-                .children
-                .iter()
-                .max_by(|&&a, &&b| {
+        
+        loop {
+            let current_node = &self.nodes[current_idx];
+            if current_node.children.is_empty() || current_node.depth >= self.params.mcts_max_depth {
+                break;
+            }
+
+            let parent_visits = current_node.visits;
+            // De iteratie over children.values() is nu correct omdat children een HashMap is.
+            let best_child = *current_node
+               .children
+               .values()
+               .max_by(|&&a, &&b| {
                     let uct_a = self.uct_score(a, parent_visits);
                     let uct_b = self.uct_score(b, parent_visits);
                     uct_a.partial_cmp(&uct_b).unwrap_or(std::cmp::Ordering::Equal)
                 })
-                .unwrap();
+               .unwrap(); //.unwrap() is veilig omdat we checken op.is_empty()
 
             path.push(self.nodes[best_child].vertex_removed.unwrap());
             current_idx = best_child;
-            if self.nodes[current_idx].depth >= self.params.mcts_max_depth {
-                break;
-            }
         }
         (current_idx, path)
     }
 
-    fn expand<R: Rng + ?Sized>(&mut self, node_idx: usize, path: &[usize], rng: &mut R) -> usize {
+    fn expand<R: Rng +?Sized>(&mut self, node_idx: usize, path: &[usize], rng: &mut R) -> usize {
+        // Expansie is alleen zinvol als de node al is bezocht en de max diepte niet is bereikt.
         if self.nodes[node_idx].visits == 0 || self.nodes[node_idx].depth >= self.params.mcts_max_depth {
             return node_idx;
         }
@@ -125,27 +138,32 @@ impl<'g> MctsTree<'g> {
         for &v in path {
             current_sol.remove(v);
         }
+        
+        if current_sol.size() == 0 {
+            return node_idx; // Kan niet verder uitbreiden als de oplossing leeg is
+        }
 
         let threshold = (self.params.gamma_target * (current_sol.size().saturating_sub(1)) as f64).floor() as usize;
         let sol_bitset = current_sol.bitset();
-        
-        // CORRECTIE (E0369): De `&`-operator wordt vervangen door de helper-functie.
-        let mut critical_subset: Vec<usize> = sol_bitset
-            .iter_ones()
-            .filter(|&u| count_intersecting_ones(self.graph.neigh_row(u), sol_bitset) <= threshold)
-            .collect();
 
-        let tried_children: HashSet<usize> = self.nodes[node_idx].children.iter().map(|&c| self.nodes[c].vertex_removed.unwrap()).collect();
-        critical_subset.retain(|v| !tried_children.contains(v));
+        let mut critical_subset: Vec<usize> = sol_bitset
+           .iter_ones()
+           .filter(|&u| count_intersecting_ones(self.graph.neigh_row(u), sol_bitset) <= threshold)
+           .collect();
+        
+        // Filter knopen die al als kind zijn geprobeerd.
+        let tried_children_vertices: HashSet<usize> = self.nodes[node_idx].children.keys().cloned().collect();
+        critical_subset.retain(|v|!tried_children_vertices.contains(v));
 
         if critical_subset.is_empty() {
-            critical_subset = sol_bitset.iter_ones().filter(|v| !tried_children.contains(v)).collect();
+            // Fallback: als er geen kritieke kandidaten meer zijn, neem dan alle nog niet geprobeerde knopen.
+            critical_subset = sol_bitset.iter_ones().filter(|v|!tried_children_vertices.contains(v)).collect();
         }
 
         if let Some(&vertex_to_remove) = critical_subset.choose(rng) {
             let new_node = MctsNode {
                 parent: Some(node_idx),
-                children: Vec::new(),
+                children: HashMap::new(),
                 visits: 0,
                 total_reward: 0.0,
                 vertex_removed: Some(vertex_to_remove),
@@ -153,39 +171,59 @@ impl<'g> MctsTree<'g> {
             };
             self.nodes.push(new_node);
             let new_node_idx = self.nodes.len() - 1;
-            self.nodes[node_idx].children.push(new_node_idx);
+            // Voeg het nieuwe kind toe aan de ouder.
+            self.nodes[node_idx].children.insert(vertex_to_remove, new_node_idx);
             return new_node_idx;
         }
 
-        node_idx
+        node_idx // Geen nieuwe knoop om uit te breiden, retourneer de huidige.
     }
 
-    fn rollout<R: Rng + ?Sized>(&self, from_node: &MctsNode, rng: &mut R) -> f64 {
+    fn rollout<R: Rng +?Sized>(&self, from_node_idx: usize, rng: &mut R) -> f64 {
+        // KRITIEKE WIJZIGING: De beloning is nu gebaseerd op KWALITEIT (dichtheid), niet op grootte.
+        
+        // 1. Reconstrueer het pad van verwijderingen dat naar deze knoop leidt.
         let mut path = Vec::new();
-        let mut current_opt = Some(from_node);
-        while let Some(current) = current_opt {
-            if let Some(v) = current.vertex_removed {
+        let mut current_idx_opt = Some(from_node_idx);
+        while let Some(current_idx) = current_idx_opt {
+            let current_node = &self.nodes[current_idx];
+            if let Some(v) = current_node.vertex_removed {
                 path.push(v);
             }
-            current_opt = current.parent.map(|idx| &self.nodes[idx]);
+            current_idx_opt = current_node.parent;
         }
         path.reverse();
 
+        // 2. Pas LNS toe om de oplossing te herstellen.
         let repaired_sol = apply_lns(&self.initial_solution, &path, self.params, rng);
-        repaired_sol.size() as f64
+
+        // 3. Bereken een betekenisvolle, samengestelde beloning.
+        let density = repaired_sol.density();
+        let is_feasible = repaired_sol.is_gamma_feasible(self.params.gamma_target);
+        
+        // Een beloning > 1.0 voor haalbare oplossingen, en < 1.0 voor onhaalbare.
+        // Dit creëert een sterk signaal voor de MCTS om haalbaarheid te prioriteren.
+        let reward = if is_feasible {
+            1.0 + density 
+        } else {
+            density
+        };
+        
+        reward
     }
 
     fn backpropagate(&mut self, start_idx: usize, reward: f64) {
-        let mut current_idx = Some(start_idx);
-        while let Some(idx) = current_idx {
+        let mut current_idx_opt = Some(start_idx);
+        while let Some(idx) = current_idx_opt {
             let node = &mut self.nodes[idx];
             node.visits += 1;
             node.total_reward += reward;
-            current_idx = node.parent;
+            current_idx_opt = node.parent;
         }
     }
 
-    fn uct_score(&self, node_idx: usize, parent_visits: u32) -> f64 {
+    // VERBETERD: uct_score is nu publiek voor gebruik in unit tests.
+    pub fn uct_score(&self, node_idx: usize, parent_visits: u32) -> f64 {
         let node = &self.nodes[node_idx];
         if node.visits == 0 {
             return f64::INFINITY;
@@ -198,16 +236,21 @@ impl<'g> MctsTree<'g> {
     fn extract_best_sequence(&self) -> Vec<usize> {
         let mut seq = Vec::new();
         let mut current_idx = 0;
-        while !self.nodes[current_idx].children.is_empty() {
+        
+        while!self.nodes[current_idx].children.is_empty() {
+            // Kies het kind met de hoogste *gemiddelde beloning* (pure exploitatie), niet UCT.
             let best_child_idx = *self.nodes[current_idx]
-                .children
-                .iter()
-                .max_by(|&&a, &&b| {
-                    let avg_reward_a = self.nodes[a].total_reward / self.nodes[a].visits.max(1) as f64;
-                    let avg_reward_b = self.nodes[b].total_reward / self.nodes[b].visits.max(1) as f64;
+               .children
+               .values()
+               .max_by(|&&a, &&b| {
+                    let node_a = &self.nodes[a];
+                    let node_b = &self.nodes[b];
+                    let avg_reward_a = node_a.total_reward / node_a.visits.max(1) as f64;
+                    let avg_reward_b = node_b.total_reward / node_b.visits.max(1) as f64;
                     avg_reward_a.partial_cmp(&avg_reward_b).unwrap_or(std::cmp::Ordering::Equal)
                 })
-                .unwrap();
+               .unwrap();
+
             seq.push(self.nodes[best_child_idx].vertex_removed.unwrap());
             current_idx = best_child_idx;
         }
@@ -215,40 +258,53 @@ impl<'g> MctsTree<'g> {
     }
 
     fn merge_from(&mut self, other: &MctsTree) {
-        if self.nodes.is_empty() || other.nodes.is_empty() {
-            return;
-        }
+        // VERBETERDE, RECURSIEVE MERGE-LOGICA
+        if other.nodes.is_empty() { return; }
+        self.recursive_merge(0, other, 0);
+    }
+    
+    fn recursive_merge(&mut self, self_node_idx: usize, other_tree: &MctsTree, other_node_idx: usize) {
+        let other_node = &other_tree.nodes[other_node_idx];
+        
+        // Update de statistieken van de huidige knoop
+        self.nodes[self_node_idx].visits += other_node.visits;
+        self.nodes[self_node_idx].total_reward += other_node.total_reward;
 
-        let self_children_map: HashMap<usize, usize> = self.nodes[0]
-            .children
-            .iter()
-            .map(|&idx| (self.nodes[idx].vertex_removed.unwrap(), idx))
-            .collect();
-
-        let other_root = &other.nodes[0];
-        self.nodes[0].visits += other_root.visits;
-        self.nodes[0].total_reward += other_root.total_reward;
-
-        for &other_child_idx in &other_root.children {
-            let other_child = &other.nodes[other_child_idx];
-            let vertex = other_child.vertex_removed.unwrap();
-
-            if let Some(&self_child_idx) = self_children_map.get(&vertex) {
-                self.nodes[self_child_idx].visits += other_child.visits;
-                self.nodes[self_child_idx].total_reward += other_child.total_reward;
+        // Doorloop de kinderen van de 'other' knoop
+        for (&other_vertex, &other_child_idx) in &other_node.children {
+            // Kijk of dit kind (geïdentificeerd door de verwijderde vertex) al bestaat in de 'self' boom
+            if let Some(&self_child_idx) = self.nodes[self_node_idx].children.get(&other_vertex) {
+                // Ja, het bestaat: roep de merge recursief aan voor deze sub-boom
+                self.recursive_merge(self_child_idx, other_tree, other_child_idx);
             } else {
-                let new_node = MctsNode {
-                    parent: Some(0),
-                    children: Vec::new(),
-                    visits: other_child.visits,
-                    total_reward: other_child.total_reward,
-                    vertex_removed: other_child.vertex_removed,
-                    depth: 1,
-                };
-                self.nodes.push(new_node);
-                let new_idx = self.nodes.len() - 1;
-                self.nodes[0].children.push(new_idx);
+                // Nee, het bestaat niet: kopieer de hele sub-boom van 'other' naar 'self'
+                self.copy_subtree(Some(self_node_idx), other_tree, other_child_idx);
             }
         }
+    }
+
+    fn copy_subtree(&mut self, new_parent_idx: Option<usize>, other_tree: &MctsTree, other_node_idx: usize) -> usize {
+        let other_node = &other_tree.nodes[other_node_idx];
+        
+        // Maak een diepe kopie van de knoop
+        let mut new_node = other_node.clone();
+        new_node.parent = new_parent_idx;
+        new_node.children = HashMap::new(); // Kinderen worden recursief toegevoegd
+
+        self.nodes.push(new_node);
+        let new_node_idx = self.nodes.len() - 1;
+
+        // Voeg de nieuwe knoop toe aan de kinderen van zijn nieuwe ouder
+        if let Some(parent_idx) = new_parent_idx {
+            let vertex = other_node.vertex_removed.unwrap();
+            self.nodes[parent_idx].children.insert(vertex, new_node_idx);
+        }
+        
+        // Roep recursief aan voor alle kinderen van de gekopieerde knoop
+        for &other_child_idx in other_node.children.values() {
+            self.copy_subtree(Some(new_node_idx), other_tree, other_child_idx);
+        }
+        
+        new_node_idx
     }
 }

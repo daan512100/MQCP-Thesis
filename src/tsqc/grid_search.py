@@ -5,12 +5,17 @@ from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 import time
 
-from tsqc.api import parse_dimacs, solve_fixed, solve_max, Params, SolutionData
-from tsqc.benchmark_cases import BENCHMARK_CASES
-from tsqc.reporter import Reporter # MCTSGridParams is verplaatst naar reporter.py voor rapportage
-
+# --- CORRECTIE HIERONDER ---
+from .api import parse_dimacs, solve_fixed, solve_max, Params, SolutionData
+from .benchmark_cases import BENCHMARK_CASES
+from .reporter import Reporter
 
 def run_grid_search(
+    # Functie-argumenten blijven hetzelfde
+    # ...
+# De rest van het bestand blijft exact hetzelfde.
+# Alleen de import-statements bovenaan hoeven te worden aangepast.
+# (Hieronder staat de volledige code voor de duidelijkheid)
     instances_dir: Path,
     output_file: Path,
     runs_per_combination: int,
@@ -20,33 +25,19 @@ def run_grid_search(
     mcts_exploration_consts: List[float],
     mcts_max_depths: List[int],
     lns_repair_depths: List[int],
-    stagnation_iters: List[int], # NIEUW: Toegevoegd als variërende parameter
+    stagnation_iters: List[int],
     reporter: Reporter,
     base_params: Params,
 ):
     """
     Voert een grid search uit over de opgegeven MCTS-LNS en stagnation_iter parameters.
-    Args:
-        instances_dir (Path): Directory met DIMACS graafbestanden.
-        output_file (Path): CSV-bestand waar de geaggregeerde resultaten worden opgeslagen.
-        runs_per_combination (int): Aantal herhalingen voor elke parametercombinatie op elke instance.
-        base_seed (int): Basis random seed; wordt verhoogd voor elke run.
-        timeout_seconds (Optional[float]): Maximaal aantal seconden per run.
-        mcts_budgets (List[int]): Lijst met MCTS budget waarden om te testen.
-        mcts_exploration_consts (List[float]): Lijst met MCTS exploratie constanten om te testen.
-        mcts_max_depths (List[int]): Lijst met MCTS maximale diepte waarden om te testen.
-        lns_repair_depths (List[int]): Lijst met LNS repair diepte waarden om te testen.
-        stagnation_iters (List[int]): Lijst met stagnation iteratie waarden om te testen.
-        reporter (Reporter): De reporter instantie voor console output.
-        base_params (Params): Een Params object met de algemene solver instellingen.
     """
-    # Genereer alle mogelijke combinaties van MCTS en stagnation_iter parameters
     param_combinations = list(product(
         mcts_budgets,
         mcts_exploration_consts,
         mcts_max_depths,
         lns_repair_depths,
-        stagnation_iters # AANGEPAST: Voeg stagnation_iters toe aan het product
+        stagnation_iters
     ))
 
     reporter.console.print(f"[bold blue]Starting Grid Search with {len(param_combinations)} combinations.[/bold blue]")
@@ -58,7 +49,7 @@ def run_grid_search(
     fieldnames = [
         "instance_name", "gamma", "k",
         "mcts_budget", "mcts_exploration_const", "mcts_max_depth", "lns_repair_depth",
-        "stagnation_iter", # AANGEPAST: stagnation_iter toevoegen aan de output
+        "stagnation_iter",
         "avg_solution_size", "max_solution_size",
         "avg_solution_density", "max_solution_density",
         "avg_run_time_seconds", "min_run_time_seconds", "max_run_time_seconds",
@@ -69,7 +60,7 @@ def run_grid_search(
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
 
-        for i, (mb, me, md, lr, si) in enumerate(param_combinations): # AANGEPAST: voeg si toe aan de unpack
+        for i, (mb, me, md, lr, si) in enumerate(param_combinations):
             current_params = base_params.copy()
             
             current_params.use_mcts = True
@@ -78,16 +69,14 @@ def run_grid_search(
             current_params.mcts_max_depth = md
             current_params.lns_repair_depth = lr
             current_params.max_time_seconds = timeout_seconds if timeout_seconds is not None else 0.0
-            current_params.stagnation_iter = si # AANGEPAST: Stel stagnation_iter in op de combinatie waarde
+            current_params.stagnation_iter = si
 
-            # Voor de rapportage: geef de individuele parameters door als een dictionary
-            # De Reporter zal deze dictionary gebruiken om de header op te bouwen.
             reporter.report_combination_start(i + 1, len(param_combinations), {
                 "mcts_budget": mb,
                 "mcts_exploration_const": me,
                 "mcts_max_depth": md,
                 "lns_repair_depth": lr,
-                "stagnation_iter": si # AANGEPAST: Voeg stagnation_iter toe aan de rapportage dict
+                "stagnation_iter": si
             })
 
 
@@ -119,8 +108,6 @@ def run_grid_search(
                         run_params = current_params.copy()
                         run_params.seed = current_seed
                         run_params.gamma_target = case.gamma
-                        # DEZE LIJN IS VERWIJDERD: run_params.stagnation_iter = case.stagnation_iter
-                        # Stagnation iter komt nu uit de combinatie via current_params.stagnation_iter = si
 
                         if case.k is not None:
                             run_params.k = case.k
@@ -157,13 +144,14 @@ def run_grid_search(
                         "mcts_exploration_const": current_params.mcts_exploration_const,
                         "mcts_max_depth": current_params.mcts_max_depth,
                         "lns_repair_depth": current_params.lns_repair_depth,
-                        "stagnation_iter": current_params.stagnation_iter, # AANGEPAST: schrijf stagnation_iter naar CSV
+                        "stagnation_iter": current_params.stagnation_iter,
                         "avg_solution_size": f"{avg_size:.2f}",
                         "max_solution_size": max_size,
                         "avg_solution_density": f"{avg_density:.4f}",
                         "max_solution_density": f"{max_density:.4f}",
                         "avg_run_time_seconds": f"{avg_time:.2f}",
                         "min_run_time_seconds": f"{min_time:.2f}",
+        
                         "max_run_time_seconds": f"{max_time:.2f}",
                         "timeout_count": timeout_count,
                         "total_runs": runs_per_combination
