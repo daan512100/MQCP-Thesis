@@ -2,20 +2,15 @@
 import csv
 from itertools import product
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Dict, Any
 import time
 
-# --- CORRECTIE HIERONDER ---
 from .api import parse_dimacs, solve_fixed, solve_max, Params, SolutionData
 from .benchmark_cases import BENCHMARK_CASES
 from .reporter import Reporter
 
+
 def run_grid_search(
-    # Functie-argumenten blijven hetzelfde
-    # ...
-# De rest van het bestand blijft exact hetzelfde.
-# Alleen de import-statements bovenaan hoeven te worden aangepast.
-# (Hieronder staat de volledige code voor de duidelijkheid)
     instances_dir: Path,
     output_file: Path,
     runs_per_combination: int,
@@ -26,18 +21,20 @@ def run_grid_search(
     mcts_max_depths: List[int],
     lns_repair_depths: List[int],
     stagnation_iters: List[int],
+    lns_rcl_alphas: List[float],
     reporter: Reporter,
     base_params: Params,
 ):
     """
-    Voert een grid search uit over de opgegeven MCTS-LNS en stagnation_iter parameters.
+    Voert een grid search uit over de opgegeven parameters.
     """
     param_combinations = list(product(
         mcts_budgets,
         mcts_exploration_consts,
         mcts_max_depths,
         lns_repair_depths,
-        stagnation_iters
+        stagnation_iters,
+        lns_rcl_alphas,
     ))
 
     reporter.console.print(f"[bold blue]Starting Grid Search with {len(param_combinations)} combinations.[/bold blue]")
@@ -46,21 +43,24 @@ def run_grid_search(
         reporter.console.print(f"[bold yellow]Timeout per run ingesteld op: {timeout_seconds:.1f} seconden.[/bold yellow]")
 
 
+    # --- AANGEPAST ---
+    # Voeg 'combination_id' toe aan de header van het CSV-bestand.
     fieldnames = [
-        "instance_name", "gamma", "k",
+        "combination_id", "instance_name", "gamma", "k",
         "mcts_budget", "mcts_exploration_const", "mcts_max_depth", "lns_repair_depth",
-        "stagnation_iter",
+        "stagnation_iter", "lns_rcl_alpha",
         "avg_solution_size", "max_solution_size",
         "avg_solution_density", "max_solution_density",
         "avg_run_time_seconds", "min_run_time_seconds", "max_run_time_seconds",
         "timeout_count", "total_runs"
     ]
+    # --- EINDE AANPASSING ---
 
     with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
 
-        for i, (mb, me, md, lr, si) in enumerate(param_combinations):
+        for i, (mb, me, md, lr, si, ra) in enumerate(param_combinations):
             current_params = base_params.copy()
             
             current_params.use_mcts = True
@@ -70,13 +70,15 @@ def run_grid_search(
             current_params.lns_repair_depth = lr
             current_params.max_time_seconds = timeout_seconds if timeout_seconds is not None else 0.0
             current_params.stagnation_iter = si
+            current_params.lns_rcl_alpha = ra
 
             reporter.report_combination_start(i + 1, len(param_combinations), {
                 "mcts_budget": mb,
                 "mcts_exploration_const": me,
                 "mcts_max_depth": md,
                 "lns_repair_depth": lr,
-                "stagnation_iter": si
+                "stagnation_iter": si,
+                "lns_rcl_alpha": ra,
             })
 
 
@@ -99,29 +101,25 @@ def run_grid_search(
                 results_for_this_case_combo: List[SolutionData] = []
                 timeout_count = 0
 
-                with reporter.create_progress_bar() as progress:
-                    task = progress.add_task(f"[cyan]Running {case.instance}...", total=runs_per_combination)
+                for run_idx in range(runs_per_combination):
+                    current_seed = base_seed + run_idx
+                    
+                    run_params = current_params.copy()
+                    run_params.seed = current_seed
+                    run_params.gamma_target = case.gamma
 
-                    for run_idx in range(runs_per_combination):
-                        current_seed = base_seed + run_idx
-                        
-                        run_params = current_params.copy()
-                        run_params.seed = current_seed
-                        run_params.gamma_target = case.gamma
+                    if case.k is not None:
+                        run_params.k = case.k
+                        result: SolutionData = solve_fixed(instance_path, run_params)
+                    else:
+                        run_params.k = None 
+                        result: SolutionData = solve_max(instance_path, run_params)
 
-                        if case.k is not None:
-                            run_params.k = case.k
-                            result: SolutionData = solve_fixed(instance_path, run_params)
-                        else:
-                            run_params.k = None 
-                            result: SolutionData = solve_max(instance_path, run_params)
+                    results_for_this_case_combo.append(result)
+                    if result.is_timed_out:
+                        timeout_count += 1
 
-                        results_for_this_case_combo.append(result)
-                        if result.is_timed_out:
-                            timeout_count += 1
-
-                        reporter.report_run_result(run_idx + 1, current_seed, result, case.gamma)
-                        progress.update(task, advance=1)
+                    reporter.report_run_result(run_idx + 1, current_seed, result, case.gamma)
                 
                 if results_for_this_case_combo:
                     sizes = [r.size for r in results_for_this_case_combo]
@@ -136,7 +134,10 @@ def run_grid_search(
                     min_time = min(times)
                     max_time = max(times)
 
+                    # --- AANGEPAST ---
+                    # Voeg de 'combination_id' toe aan elke rij die we wegschrijven.
                     writer.writerow({
+                        "combination_id": i + 1,
                         "instance_name": case.instance,
                         "gamma": case.gamma,
                         "k": case.k,
@@ -145,17 +146,18 @@ def run_grid_search(
                         "mcts_max_depth": current_params.mcts_max_depth,
                         "lns_repair_depth": current_params.lns_repair_depth,
                         "stagnation_iter": current_params.stagnation_iter,
+                        "lns_rcl_alpha": current_params.lns_rcl_alpha,
                         "avg_solution_size": f"{avg_size:.2f}",
                         "max_solution_size": max_size,
                         "avg_solution_density": f"{avg_density:.4f}",
                         "max_solution_density": f"{max_density:.4f}",
                         "avg_run_time_seconds": f"{avg_time:.2f}",
                         "min_run_time_seconds": f"{min_time:.2f}",
-        
                         "max_run_time_seconds": f"{max_time:.2f}",
                         "timeout_count": timeout_count,
                         "total_runs": runs_per_combination
                     })
+                    # --- EINDE AANPASSING ---
                 else:
                     reporter.console.print(f"[yellow]No runs completed for {case.instance} with current parameters due to earlier errors.[/yellow]")
                 reporter.console.print("-" * 70)

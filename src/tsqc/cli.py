@@ -1,26 +1,17 @@
 # src/tsqc/cli.py
-# VOLLEDIG HERSCHREVEN (met import-fix)
-"""
-Command Line Interface voor de TSQC Oplosser.
-Dit bestand is het centrale toegangspunt voor alle acties. Het gebruikt Typer
-voor een robuuste en gebruiksvriendelijke interface en de Reporter-klasse voor
-rijke, informatieve output.
-"""
+
 import time
 from pathlib import Path
 from typing import Optional, List
 
 import typer
 
-# --- CORRECTIE HIERONDER ---
-# Gebruik expliciete relatieve imports (met een punt ervoor)
-# om Python te vertellen dat het in dezelfde package-directory moet zoeken.
 from .api import solve_fixed, solve_max, parse_dimacs, SolutionData, Params
 from .reporter import Reporter
 from .benchmark_cases import BENCHMARK_CASES
 from .grid_search import run_grid_search
+from .analyzer import analyze_and_print_top_3  # --- NIEUW ---
 
-# Initialiseer de Typer-app en de Reporter-klasse.
 app = typer.Typer(
     name="tsqc",
     help="Een robuuste oplosser voor het Maximum Quasi-Clique Probleem, met een Rust-core.",
@@ -30,9 +21,6 @@ app = typer.Typer(
 )
 reporter = Reporter()
 
-# De rest van de functies (@app.command(), etc.) blijven exact hetzelfde.
-# Je hoeft alleen de import-sectie bovenaan te vervangen.
-# (Hieronder staat de volledige code voor de duidelijkheid)
 
 @app.command()
 def solve(
@@ -58,6 +46,7 @@ def solve(
     mcts_uct: float = typer.Option(1.414, help="MCTS: UCT exploratieconstante."),
     mcts_depth: int = typer.Option(5, help="MCTS: Maximale diepte van de zoekboom."),
     lns_repair_depth: int = typer.Option(10, help="LNS: Aantal verfijningsstappen in de herstelfase."),
+    lns_rcl_alpha: float = typer.Option(1.0, "--lns-alpha", help="GRASP: Willekeur voor LNS-reconstructie (1.0=greedy)."),
     timeout_seconds: float = typer.Option(
         0.0, "--timeout", "-t",
         help="Maximale tijd in seconden voor de run. 0.0 = geen timeout."
@@ -81,6 +70,7 @@ def solve(
         mcts_exploration_const=mcts_uct,
         mcts_max_depth=mcts_depth,
         lns_repair_depth=lns_repair_depth,
+        lns_rcl_alpha=lns_rcl_alpha,
         max_time_seconds=timeout_seconds,
         seed=seed,
         runs=runs,
@@ -90,6 +80,8 @@ def solve(
     params_for_report = {
         "instance": instance.name,
         "gamma": gamma,
+        "mode": "fixed-k" if k else "max-k",
+        "k": k if k else "N/A",
         "seed": seed,
         "runs": runs,
         "use_mcts": use_mcts,
@@ -97,17 +89,10 @@ def solve(
         "mcts_uct": mcts_uct,
         "mcts_depth": mcts_depth,
         "lns_repair_depth": lns_repair_depth,
+        "lns_rcl_alpha": lns_rcl_alpha,
         "timeout_seconds": timeout_seconds,
         "stagnation_iter": stagnation_iter,
-        "max_iter": max_iter,
-        "tenure_u": tenure_u,
-        "tenure_v": tenure_v,
     }
-    if k:
-        params_for_report["mode"] = "fixed-k"
-        params_for_report["k"] = k
-    else:
-        params_for_report["mode"] = "max-k"
     
     reporter.console.print(f"Starting solver for [cyan]{instance.name}[/cyan]...")
     
@@ -140,6 +125,7 @@ def run_predefined_benchmarks(
     mcts_uct: float = typer.Option(1.414, help="MCTS: UCT exploratieconstante."),
     mcts_depth: int = typer.Option(5, help="MCTS: Maximale diepte van de zoekboom."),
     lns_repair_depth: int = typer.Option(10, help="LNS: Aantal verfijningsstappen in de herstelfase."),
+    lns_rcl_alpha: float = typer.Option(1.0, "--lns-alpha", help="GRASP: Willekeur voor LNS-reconstructie (1.0=greedy)."),
     timeout_seconds: float = typer.Option(
         0.0, "--timeout", "-t",
         help="Maximale tijd in seconden per run. 0.0 = geen timeout."
@@ -170,6 +156,7 @@ def run_predefined_benchmarks(
         mcts_exploration_const=mcts_uct,
         mcts_max_depth=mcts_depth,
         lns_repair_depth=lns_repair_depth,
+        lns_rcl_alpha=lns_rcl_alpha,
         max_time_seconds=timeout_seconds,
         seed=0,
         runs=1,
@@ -196,36 +183,29 @@ def run_predefined_benchmarks(
         best_solution_for_case: Optional[SolutionData] = None
         case_start_time = time.perf_counter()
 
-        progress_ctx = reporter.create_progress_bar()
-        with progress_ctx as progress:
-            task = progress.add_task(f"[cyan]Runs voor {case.instance}", total=runs)
+        for run_idx in range(1, runs + 1):
+            run_seed = base_seed + run_idx - 1
+            
+            current_run_params = base_solver_params.copy()
+            current_run_params.seed = run_seed
+            current_run_params.gamma_target = case.gamma
+            current_run_params.stagnation_iter = case.stagnation_iter
+            
+            try:
+                if case.k is not None:
+                    current_run_params.k = case.k
+                    solution = solve_fixed(instance_path=instance_path, params=current_run_params)
+                else:
+                    current_run_params.k = None
+                    solution = solve_max(instance_path=instance_path, params=current_run_params)
+                
+                reporter.report_run_result(run_idx, run_seed, solution, case.gamma)
+                
+                if best_solution_for_case is None or solution.density > best_solution_for_case.density:
+                    best_solution_for_case = solution
 
-            for run_idx in range(1, runs + 1):
-                run_seed = base_seed + run_idx - 1
-                progress.update(task, description=f"[cyan]Run {run_idx}/{runs} (seed={run_seed})")
-                
-                current_run_params = base_solver_params.copy()
-                current_run_params.seed = run_seed
-                current_run_params.gamma_target = case.gamma
-                current_run_params.stagnation_iter = case.stagnation_iter
-                
-                try:
-                    if case.k is not None:
-                        current_run_params.k = case.k
-                        solution = solve_fixed(instance_path=instance_path, params=current_run_params)
-                    else:
-                        current_run_params.k = None
-                        solution = solve_max(instance_path=instance_path, params=current_run_params)
-                    
-                    reporter.report_run_result(run_idx, run_seed, solution, case.gamma)
-                    
-                    if best_solution_for_case is None or solution.density > best_solution_for_case.density:
-                        best_solution_for_case = solution
-
-                except Exception as e:
-                    reporter.report_run_error(run_idx, run_seed, str(e))
-                
-                progress.advance(task)
+            except Exception as e:
+                reporter.report_run_error(run_idx, run_seed, str(e))
 
         case_total_time = time.perf_counter() - case_start_time
         reporter.report_case_summary(best_solution_for_case, case_total_time)
@@ -266,7 +246,7 @@ def grid_search_command(
     mcts_budgets: List[int] = typer.Option(
         ...,
         "--mcts-budget",
-        help="Lijst van MCTS budget waarden om te testen. Meerdere waarden mogelijk (bijv. --mcts-budget 100 --mcts-budget 200).",
+        help="Lijst van MCTS budget waarden om te testen. Meerdere waarden mogelijk.",
         show_default=False,
     ),
     mcts_exploration_consts: List[float] = typer.Option(
@@ -293,6 +273,11 @@ def grid_search_command(
         help="Lijst van stagnation iteratie waarden om te testen. Meerdere waarden mogelijk.",
         show_default=True,
     ),
+    lns_rcl_alphas: List[float] = typer.Option(
+        [1.0], "--lns-alpha",
+        help="Lijst van LNS-reconstructie alpha-waarden om te testen. Meerdere waarden mogelijk.",
+        show_default=True,
+    ),
     max_iter: int = typer.Option(100_000_000, help="Maximaal aantal iteraties voor de solver."),
     tenure_u: int = typer.Option(1, help="Tabu tenure voor toevoegen (u)."),
     tenure_v: int = typer.Option(1, help="Tabu tenure voor verwijderen (v)."),
@@ -315,6 +300,7 @@ def grid_search_command(
         mcts_exploration_const=0.0,
         mcts_max_depth=0,
         lns_repair_depth=0,
+        lns_rcl_alpha=1.0,
         max_time_seconds=timeout_seconds,
         seed=0,
         runs=1,
@@ -332,9 +318,16 @@ def grid_search_command(
         mcts_max_depths=mcts_max_depths,
         lns_repair_depths=lns_repair_depths,
         stagnation_iters=stagnation_iters,
+        lns_rcl_alphas=lns_rcl_alphas,
         reporter=reporter,
         base_params=base_grid_params,
     )
+
+    # --- NIEUW ---
+    # Na het voltooien van de grid search, roep de analysefunctie aan.
+    analyze_and_print_top_3(output_file)
+    # --- EINDE NIEUW ---
+
 
 if __name__ == "__main__":
     app()

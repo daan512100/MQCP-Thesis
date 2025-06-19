@@ -1,5 +1,4 @@
 # pyproject.toml
-# DEFINITIEVE FINALE VERSIE
 
 [build-system]
 requires = ["maturin>=1.4,<2.0"]
@@ -15,10 +14,10 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 
-# De 'rich' dependency is terecht weer aanwezig.
 dependencies = [
     "typer[all]>=0.9.0",
-    "rich>=13.0.0"
+    "rich>=13.0.0",
+    "pandas>=2.0.0"  # --- NIEUW ---
 ]
 
 [project.scripts]

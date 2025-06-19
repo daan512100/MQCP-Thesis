@@ -1,6 +1,4 @@
 // src/restart.rs
-//!
-//! Implementeert de multi-start Tabu Search voor een vaste `k`.
 
 use crate::{
     construct::greedy_random_k,
@@ -18,22 +16,20 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 use std::time::Instant;
 
-/// Helper-functie die in deze module wordt gebruikt.
 fn count_intersecting_ones(a: &bitvec::slice::BitSlice, b: &bitvec::slice::BitSlice) -> usize {
     a.iter().by_vals().zip(b.iter().by_vals()).filter(|&(x, y)| x && y).count()
 }
 
-/// Zoekt naar een `γ`-quasi-clique van vaste grootte `k` en stopt zodra een haalbare oplossing is gevonden.
+// De return-signature blijft (Solution, bool) voor de 'makkelijke' logging methode.
 pub fn solve_fixed_k<'g, R>(
     graph: &'g Graph,
     k: usize,
     rng: &mut R,
     p: &Params,
-) -> (Solution<'g>, bool) // Returns (gevonden_oplossing, is_timed_out)
+) -> (Solution<'g>, bool)
 where
     R: Rng + ?Sized + Send + Sync,
 {
-    // --- 0. Initialisatie ---
     let max_possible_edges = if k > 1 { k * (k - 1) / 2 } else { 0 };
     let needed_edges = (p.gamma_target * max_possible_edges as f64).ceil() as usize;
 
@@ -46,10 +42,14 @@ where
 
     let mut freq_mem = vec![0usize; graph.n()];
     let mut best_global = Solution::new(graph);
+    
     let mut total_moves = 0usize;
+    let mut total_restarts = 0usize;
+    let mut total_diversifications = 0usize;
 
-    // --- 1. Hoofdlus met Restarts ---
     'restart_loop: while total_moves < p.max_iter {
+        total_restarts += 1;
+        
         if p.max_time_seconds > 0.0 && start_time.elapsed().as_secs_f64() >= p.max_time_seconds {
             is_timed_out = true;
             break;
@@ -58,50 +58,49 @@ where
         let mut cur = initialize_solution(graph, k, &mut freq_mem, &best_global, rng);
         let mut tabu = DualTabu::new(graph.n(), p.tenure_u, p.tenure_v);
         tabu.update_tenures(cur.size(), cur.edges(), p.gamma_target, rng);
-
         let mut best_run = cur.clone();
         
-        // --- Controleer direct na initialisatie ---
-        // Als de initiële oplossing al haalbaar is, zijn we direct klaar.
         if best_run.is_gamma_feasible(p.gamma_target) {
-            return (best_run, false); // Gevonden, niet timed out
+            eprintln!("[RUST-STATS] Moves: {}, Restarts: {}, Divers: {}", total_moves, total_restarts, total_diversifications);
+            return (best_run, false);
         }
 
         let mut stagnation = 0usize;
 
-        // --- 2. Lokale Zoektocht ---
         while stagnation < p.stagnation_iter && total_moves < p.max_iter {
             if p.max_time_seconds > 0.0 && start_time.elapsed().as_secs_f64() >= p.max_time_seconds {
                 is_timed_out = true;
-                // Update de globale beste VOORDAT we stoppen
                 if best_run.density() > best_global.density() {
                     best_global = best_run;
                 }
                 break 'restart_loop;
             }
 
-            let moved = improve_once(&mut cur, &mut tabu, best_global.density(), &mut freq_mem, p, rng);
+            improve_once(&mut cur, &mut tabu, best_global.density(), &mut freq_mem, p, rng);
             total_moves += 1;
             
+            // --- DEFINITIEVE LOGISCHE AANPASSING ---
             if cur.density() > best_run.density() {
+                // Alleen bij een STRIKTE verbetering resetten we de teller.
                 best_run = cur.clone();
                 stagnation = 0;
-            } else if moved {
-                stagnation = 0;
             } else {
+                // Als er geen verbetering is (ook al was er een neutrale zet),
+                // loopt de stagnatie op. Dit zorgt ervoor dat MCTS wordt aangeroepen.
                 stagnation += 1;
             }
+            // --- EINDE AANPASSING ---
 
-            // --- KRITIEKE LOGICA: EARLY EXIT ---
-            // Controleer NA ELKE VERBETERING of we een haalbare oplossing hebben.
             if best_run.is_gamma_feasible(p.gamma_target) {
-                // JA! Gevonden. Stop de zoektocht en retourneer dit resultaat.
-                return (best_run, false); // Gevonden, niet timed out
+                if best_run.density() > best_global.density() {
+                    best_global = best_run.clone();
+                }
+                eprintln!("[RUST-STATS] Moves: {}, Restarts: {}, Divers: {}", total_moves, total_restarts, total_diversifications);
+                return (best_global, false);
             }
 
-            // Diversificatie bij stagnatie
             if stagnation >= p.stagnation_iter {
-                // ... (diversificatie logica blijft hetzelfde) ...
+                total_diversifications += 1;
                 if p.use_mcts {
                     let mut mcts_tree = MctsTree::new(&best_run, graph, p);
                     let removal_seq = mcts_tree.run(rng);
@@ -120,19 +119,15 @@ where
             }
         }
 
-        // Update de globale beste oplossing (voor het geval we nooit een haalbare vonden)
         if best_run.density() > best_global.density() {
             best_global = best_run;
         }
     }
 
-    // Retourneer de beste oplossing die we hebben als de tijd om is of max_iter is bereikt
-    // ZONDER een haalbare oplossing te vinden.
+    eprintln!("[RUST-STATS] Moves: {}, Restarts: {}, Divers: {}", total_moves, total_restarts, total_diversifications);
     (best_global, is_timed_out)
 }
 
-
-/// Helper voor het construeren van een initiële oplossing. (ongewijzigd)
 fn initialize_solution<'g, R>(
     graph: &'g Graph,
     k: usize,
@@ -146,10 +141,8 @@ where
     if best_global.size() == 0 {
         return greedy_random_k(graph, k, rng);
     }
-
     let min_f = *freq_mem.iter().min().unwrap_or(&0);
     let seed_candidates: Vec<usize> = (0..graph.n()).filter(|&v| freq_mem[v] == min_f).collect();
-    
     let mut s = Solution::new(graph);
     if let Some(&seed_node) = seed_candidates.choose(rng) {
         add_counted(&mut s, seed_node, freq_mem);
@@ -159,7 +152,6 @@ where
     } else {
         return s;
     }
-
     while s.size() < k {
         let s_bitset = s.bitset();
         let best_v_cand = (0..graph.n())
@@ -169,7 +161,6 @@ where
                 let freq = freq_mem[v_out];
                 (gain, -(freq as isize))
             });
-
         if let Some(chosen) = best_v_cand {
             add_counted(&mut s, chosen, freq_mem);
         } else {

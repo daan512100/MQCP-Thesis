@@ -16,9 +16,16 @@ class BenchmarkCase(NamedTuple):
 
 
 BENCHMARK_CASES: List[BenchmarkCase] = [
-    # γ = 0.85
-    BenchmarkCase("p_hat300-1.clq",  0.85,  12, 1_000),
-    BenchmarkCase("brock200_2.clq",  0.85,  19, 1_000),
-    BenchmarkCase("keller4.clq",     0.85,  31, 1_000),
+
+   BenchmarkCase("brock200_4.clq",  0.85,  39, 1_000),
+    BenchmarkCase("p_hat300-3.clq",  0.85, 180, 1_000),
+    BenchmarkCase("brock400_2.clq",  0.85, 100, 1_000),
+    BenchmarkCase("brock400_4.clq",  0.85, 102, 1_000),
+    BenchmarkCase("p_hat700-1.clq",  0.85,  19, 1_000),
+    BenchmarkCase("p_hat700-2.clq",  0.85, 223, 1_000),
+    BenchmarkCase("p_hat700-3.clq",  0.85, 430, 1_000),
+    BenchmarkCase("p_hat1500-2.clq", 0.85, 487, 1_000),
+    BenchmarkCase("p_hat1500-3.clq", 0.85, 943, 1_000),
+    BenchmarkCase("keller5.clq",     0.85, 286, 1_000),
 
 ]

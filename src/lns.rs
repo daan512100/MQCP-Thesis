@@ -1,21 +1,15 @@
-//! src/lns.rs
-//!
-//! Implementeert de Large Neighborhood Search (LNS) herstelheuristiek.
-//! Dit volgt de twee-fasen aanpak uit de thesis-proposal:
-//! 1. Greedy Completion: herstel de oplossingsgrootte.
-//! 2. Mini-TSQC Refinement: verfijn de oplossing met lokale zoekstappen.
+// src/lns.rs
 
 use crate::{
-    neighbour::improve_once, params::Params, solution::Solution, tabu::DualTabu,
+    graph::Graph, // --- TOEGEVOEGD: expliciete import voor count_connections ---
+    neighbour::improve_once, 
+    params::Params, 
+    solution::Solution, 
+    tabu::DualTabu,
 };
+use rand::seq::SliceRandom; // --- TOEGEVOEGD: voor .choose() op de RCL ---
 use rand::Rng;
 
-/// Past LNS-herstel toe op een deels vernietigde oplossing.
-///
-/// - `initial_sol`: De oplossing vóór de vernietiging.
-/// - `removals`: De sequentie van verwijderde knopen.
-///
-/// Geeft een herstelde oplossing terug.
 pub fn apply_lns<'g, R>(
     initial_sol: &Solution<'g>,
     removals: &[usize],
@@ -33,50 +27,62 @@ where
     let target_k = initial_sol.size();
     let graph = initial_sol.graph();
 
-    // --- Fase 1: Greedy Completion ---
-    // Herstel de grootte van de oplossing naar `target_k`.
+    // --- FASE 1: Gerandomiseerde Greedy Completion (GRASP) ---
+    // Deze hele `while`-lus is de nieuwe, slimmere logica.
     while sol.size() < target_k {
-        let mut best_gain = isize::MIN;
-        let mut best_v = None;
         let sol_bitset = sol.bitset();
+        
+        // Stap 1: Verzamel alle mogelijke kandidaten buiten de oplossing en hun 'gain'.
+        let candidates: Vec<(usize, isize)> = (0..graph.n())
+            .filter(|&v| !sol_bitset[v])
+            .map(|v| {
+                // Gebruik de `count_connections` methode van Solution, die al geoptimaliseerd is.
+                let gain = sol.count_connections(v) as isize;
+                (v, gain)
+            })
+            .collect();
 
-        for v in 0..graph.n() {
-            if !sol_bitset[v] {
-                // CORRECTIE (E0369): De `&`-operator wordt vervangen door een handmatige
-                // en performante intersectie-telling via iterators.
-                let gain = graph
-                    .neigh_row(v)
-                    .iter()
-                    .by_vals()
-                    .zip(sol_bitset.iter().by_vals())
-                    .filter(|&(a, b)| a && b)
-                    .count() as isize;
-
-                if gain > best_gain {
-                    best_gain = gain;
-                    best_v = Some(v);
-                }
-            }
+        // Als er geen kandidaten meer zijn, kunnen we niet verder.
+        if candidates.is_empty() {
+            break;
         }
 
-        if let Some(v_to_add) = best_v {
-            sol.add(v_to_add);
+        // Stap 2: Bepaal de hoogst mogelijke gain van alle kandidaten.
+        let best_gain = match candidates.iter().map(|&(_, g)| g).max() {
+            Some(g) => g,
+            None => break, // Veiligheid: stop als de lijst leeg zou zijn.
+        };
+        
+        // Stap 3: Bouw de Restricted Candidate List (RCL).
+        // Bepaal de drempel op basis van de beste gain en de nieuwe alpha-parameter.
+        let rcl_threshold = (best_gain as f64 * p.lns_rcl_alpha).floor() as isize;
+        let rcl: Vec<usize> = candidates
+            .into_iter()
+            .filter(|&(_, g)| g >= rcl_threshold) // Alle kandidaten die 'goed genoeg' zijn.
+            .map(|(v, _)| v)
+            .collect();
+
+        // Stap 4: Kies een WILLEKEURIGE knoop uit de lijst van goede kandidaten en voeg toe.
+        if let Some(&chosen) = rcl.choose(rng) {
+            sol.add(chosen);
         } else {
-            // Geen knopen meer om toe te voegen.
+            // Als de RCL om een of andere reden leeg is, kunnen we niet verder.
             break;
         }
     }
+    // --- EINDE NIEUWE LOGICA ---
+
 
     // --- Fase 2: Mini-TSQC Refinement ---
-    // Verfijn de oplossing met een korte lokale zoektocht.
+    // Dit deel blijft ongewijzigd. Na de (nu slimmere) reconstructie,
+    // proberen we de oplossing lokaal nog wat te verbeteren.
     if p.lns_repair_depth > 0 {
         let mut tabu = DualTabu::new(graph.n(), p.tenure_u, p.tenure_v);
-        let mut freq = vec![0; graph.n()]; // Tijdelijk frequentiegeheugen
-        let best_rho = 0.0; // Aspiratie is niet relevant in deze korte verfijning.
+        let mut freq = vec![0; graph.n()]; 
+        let best_rho = 0.0;
 
         for _ in 0..p.lns_repair_depth {
             if !improve_once(&mut sol, &mut tabu, best_rho, &mut freq, p, rng) {
-                // Geen verbetering meer mogelijk.
                 break;
             }
         }

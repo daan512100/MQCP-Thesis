@@ -1,9 +1,4 @@
 // src/lib.rs
-//! src/lib.rs
-//!
-//! Hoofdbestand van de Rust-bibliotheek. Definieert de publieke modules
-//! en de PyO3-bindings om de Rust-functionaliteit toegankelijk te maken
-//! vanuit Python.
 
 // Publieke modules voor gebruik binnen de Rust-crate
 pub mod construct;
@@ -35,14 +30,13 @@ use std::io::BufReader;
 #[pyo3(signature = (instance_path, py_params))]
 fn solve_k_py(
     instance_path: String,
-    py_params: Py<Params>, // Ontvang het Params object
+    py_params: Py<Params>,
 ) -> PyResult<(usize, usize, f64, bool)> {
     let file = File::open(&instance_path)
        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
     let graph = Graph::parse_dimacs(BufReader::new(file))
        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-
-    // AANGEPAST: Gebruik Python::with_gil
+    
     let p = Python::with_gil(|py| {
         let p_ref = py_params.borrow(py);
         Params::new(
@@ -56,6 +50,9 @@ fn solve_k_py(
             p_ref.mcts_exploration_const,
             p_ref.mcts_max_depth,
             p_ref.lns_repair_depth,
+            // --- NIEUW ---
+            p_ref.lns_rcl_alpha,
+            // --- EINDE NIEUW ---
             p_ref.max_time_seconds,
             p_ref.k,
             p_ref.runs,
@@ -92,14 +89,13 @@ fn solve_k_py(
 #[pyo3(signature = (instance_path, py_params))]
 fn solve_max_py(
     instance_path: String,
-    py_params: Py<Params>, // Ontvang het Params object
+    py_params: Py<Params>,
 ) -> PyResult<(usize, usize, f64, bool)> {
     let file = File::open(&instance_path)
        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
     let graph = Graph::parse_dimacs(BufReader::new(file))
        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
-    // AANGEPAST: Gebruik Python::with_gil
     let p = Python::with_gil(|py| {
         let p_ref = py_params.borrow(py);
         Params::new(
@@ -113,6 +109,9 @@ fn solve_max_py(
             p_ref.mcts_exploration_const,
             p_ref.mcts_max_depth,
             p_ref.lns_repair_depth,
+            // --- NIEUW ---
+            p_ref.lns_rcl_alpha,
+            // --- EINDE NIEUW ---
             p_ref.max_time_seconds,
             p_ref.k,
             p_ref.runs,
