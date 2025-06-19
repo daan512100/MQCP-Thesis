@@ -1,5 +1,5 @@
 # src/tsqc/reporter.py
-# NIEUW BESTAND
+# NIEUW BESTAND (met aanpassingen voor grid search rapportage)
 """
 Deze module bevat de `Reporter`-klasse, die verantwoordelijk is voor alle
 terminal-output. Het gebruikt de 'rich' bibliotheek voor visueel aantrekkelijke
@@ -8,10 +8,9 @@ Dit centraliseert alle print-logica op één plek, waardoor de CLI-code
 (in cli.py) schoner wordt en zich kan focussen op de uitvoeringslogica.
 """
 
-from typing import Optional, Dict
+from typing import Optional, Dict, Any, NamedTuple
 
 # Rich is een krachtige bibliotheek voor mooie terminal-output.
-# Deze moet later worden toegevoegd aan de dependencies in pyproject.toml.
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -19,9 +18,22 @@ from rich.text import Text
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
 # Importeer de datastructuren.
-# Deze import gaat er vanuit dat we later de __init__.py en api.py aanpassen.
-from tsqc.api import SolutionData
-from tsqc.benchmark_cases import BenchmarkCase
+from tsqc.api import SolutionData 
+from tsqc.benchmark_cases import BenchmarkCase # BenchmarkCase is hier nodig voor type hints
+
+
+class MCTSGridParams(NamedTuple):
+    """
+    NamedTuple om een set MCTS parameters voor een grid search combinatie vast te houden.
+    Verplaatst van grid_search.py om circulaire imports te voorkomen.
+    Wordt nu voornamelijk intern door de Reporter gebruikt voor type-hints,
+    of voor het geval dat een Dict niet flexibel genoeg is, maar we zullen Dict gebruiken.
+    """
+    mcts_budget: int
+    mcts_exploration_const: float
+    mcts_max_depth: int
+    lns_repair_depth: int
+    # stagnation_iter: int # We gebruiken een Dict[str, Any] voor flexibiliteit, dus deze is niet nodig hier.
 
 
 class Reporter:
@@ -30,6 +42,34 @@ class Reporter:
     def __init__(self):
         """Initialiseert een 'rich' console-object voor alle output."""
         self.console = Console(highlight=False)
+
+    def report_combination_start(self, combination_idx: int, total_combinations: int, params: Dict[str, Any]): # AANGEPAST: params is nu Dict[str, Any]
+        """
+        Rapporteert de start van een nieuwe parametercombinatie in de grid search.
+        Args:
+            combination_idx (int): De index van de huidige combinatie.
+            total_combinations (int): Het totale aantal combinaties.
+            params (Dict[str, Any]): Een dictionary met de MCTS en andere getunede parameters voor deze combinatie.
+        """
+        title = f"[bold magenta]Combinatie {combination_idx}/{total_combinations}[/bold magenta]"
+        subtitle_parts = [
+            f"Budget={params['mcts_budget']}",
+            f"Exploration={params['mcts_exploration_const']:.3f}",
+            f"MaxDepth={params['mcts_max_depth']}",
+            f"RepairDepth={params['lns_repair_depth']}"
+        ]
+        # Voeg stagnation_iter alleen toe als deze aanwezig is in de params dict
+        if 'stagnation_iter' in params:
+            subtitle_parts.append(f"Stagnation={params['stagnation_iter']}")
+
+        subtitle = " | ".join(subtitle_parts)
+
+        self.console.print(
+            Panel(Text(subtitle, justify="center"), title=title, border_style="magenta", expand=False),
+            justify="center"
+        )
+        self.console.print("-" * 70)
+
 
     def report_case_start(self, case: BenchmarkCase, n: int, m: int):
         """
@@ -41,10 +81,8 @@ class Reporter:
         """
         title = f"[bold cyan]Case: {case.instance}[/bold cyan]"
         subtitle = (f"γ={case.gamma:.3f} | Target k={case.k} | "
-                    f"Graph (n={n}, m={m})")
+                    f"Graaf (n={n}, m={m})")
         
-        # Gebruik Text(subtitle, justify="center", markup=True) als subtitle markup bevat,
-        # maar hier bevat het geen markup, dus dit is prima.
         panel_content = Text(subtitle, justify="center")
         self.console.print(
             Panel(panel_content, title=title, border_style="cyan", expand=False),
@@ -66,12 +104,10 @@ class Reporter:
             sol: Het SolutionData-object met de resultaten van de solver.
             gamma: De gamma-drempel die gold, om de haalbaarheid correct te beoordelen.
         """
-        # Bepaal de status (haalbaar of niet) op basis van de gamma-drempel.
-        # Een kleine epsilon (1e-9) wordt gebruikt om floating-point onnauwkeurigheden te ondervangen.
         is_feasible = sol.density + 1e-9 >= gamma
         
         status_text = ""
-        status_color = "yellow" # Default for timed out or infeasible
+        status_color = "yellow"
 
         if sol.is_timed_out:
             status_text = "Timed Out"
@@ -83,7 +119,6 @@ class Reporter:
             status_text = "Infeasible"
             status_color = "yellow"
 
-        # Gebruik een f-string met directe markup, want console.print() verwerkt dit correct.
         line = (
             f"  ├─ Run {run_idx:<2} (Seed: {seed:<4}) │ "
             f"Size: {sol.size:<4} │ Edges: {sol.edges:<6} │ "
@@ -91,13 +126,13 @@ class Reporter:
             f"Time: {sol.time:.2f}s │ "
             f"Status: [{status_color}]{status_text}[/{status_color}]"
         )
-        self.console.print(line, markup=True) # Zorg ervoor dat markup wordt geparset
+        self.console.print(line, markup=True)
 
     def report_run_error(self, run_idx: int, seed: int, error_msg: str):
         """Rapporteert een fout die is opgetreden tijdens een specifieke run."""
         self.console.print(
             f"  ├─ Run {run_idx} (seed={seed}) [bold red]FAILED[/bold red]: {error_msg}",
-            markup=True # Zorg ervoor dat markup wordt geparset
+            markup=True
         )
 
     def report_case_summary(
@@ -113,8 +148,6 @@ class Reporter:
             total_time: De totale tijd die alle runs voor deze case hebben gekost.
         """
         if best_sol:
-            # CORRECTIE: Maak één Text object en gebruik daarin de markup.
-            # `Text.assemble` is een goede optie voor het samenstellen van opgemaakte tekst.
             summary_text = Text.assemble(
                 "Beste Grootte: ", Text(str(best_sol.size), style="bold green"),
                 " | Beste Dichtheid: ", Text(f"{best_sol.density:.5f}", style="bold green"),
@@ -122,34 +155,29 @@ class Reporter:
             )
             border_style = "green"
         else:
-            # Hier direct een Text object met markup True als de hele string markup bevat.
             summary_text = Text("[bold red]Geen werkende oplossing gevonden in alle runs.[/bold red]", markup=True)
             border_style = "red"
 
         self.console.print(
-            Panel(summary_text, # Geef het reeds opgemaakte Text object direct door
-                  title="[bold]Case Samenvatting[/bold]", # Titel bevat ook markup, dit werkt prima zonder extra markup=True
+            Panel(summary_text,
+                  title="[bold]Case Samenvatting[/bold]",
                   border_style=border_style,
                   padding=(1, 2)),
             justify="center"
         )
-        # De extra lege regel na de samenvatting is al eerder verwijderd in cli.py of hier.
-        # self.console.print() 
-
-    def report_solve_result(self, sol: SolutionData, params: Dict[str, any]):
+        
+    def report_solve_result(self, sol: SolutionData, params: Dict[str, Any]):
         """Presenteert het resultaat van een enkele 'solve' aanroep in een overzichtelijke tabel."""
         table = Table(title="[bold]TSQC Oplosser Resultaat[/bold]", show_header=True, header_style="bold magenta",
-                      caption_justify="center") # Optioneel: centreer de titel
+                      caption_justify="center")
 
         table.add_column("Parameter", style="cyan", no_wrap=True)
         table.add_column("Waarde")
 
         for key, value in params.items():
-            # Gebruik Text objecten of zorg dat de string geen markup heeft als Text().markup=True niet wordt gebruikt
             table.add_row(Text(str(key).replace("_", " ").title()), Text(str(value)))
         
         table.add_section()
-        # Gebruik Text objecten voor opmaak
         table.add_row(Text("Grootte", style="bold"), Text(str(sol.size), style="bold green"))
         table.add_row(Text("Kanten", style="bold"), Text(str(sol.edges), style="bold green"))
         table.add_row(Text("Dichtheid", style="bold"), Text(f"{sol.density:.5f}", style="bold green"))
@@ -164,6 +192,7 @@ class Reporter:
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
+            TextColumn("[progress.completed]/[progress.total]"), # Toont nu ook absoluut aantal
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TimeElapsedColumn(),
             console=self.console,

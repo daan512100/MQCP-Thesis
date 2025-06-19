@@ -32,51 +32,50 @@ use std::io::BufReader;
 
 /// Python-binding voor de fixed-k oplosser.
 #[pyfunction]
-#[pyo3(signature = (
-    instance_path, k, gamma, seed, runs=1,
-    use_mcts=false, mcts_budget=100, mcts_uct=1.414, mcts_depth=5, lns_repair_depth=10,
-    max_time_seconds=0.0 // NIEUW: 0.0 betekent geen timeout
-))]
+#[pyo3(signature = (instance_path, py_params))]
 fn solve_k_py(
     instance_path: String,
-    k: usize,
-    gamma: f64,
-    seed: u64,
-    runs: usize,
-    use_mcts: bool,
-    mcts_budget: usize,
-    mcts_uct: f64,
-    mcts_depth: usize,
-    lns_repair_depth: usize,
-    max_time_seconds: f64, // NIEUWE parameter
-) -> PyResult<(usize, usize, f64, bool)> { // AANGEPAST retourtype: (size, edges, density, is_timed_out)
+    py_params: Py<Params>, // Ontvang het Params object
+) -> PyResult<(usize, usize, f64, bool)> {
     let file = File::open(&instance_path)
        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
     let graph = Graph::parse_dimacs(BufReader::new(file))
        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
-    let mut p = Params::default();
-    p.gamma_target = gamma;
-    if use_mcts {
-        p.enable_mcts(mcts_budget, mcts_uct, mcts_depth, lns_repair_depth);
-    }
-    // Geef de nieuwe max_time_seconds parameter door aan de Params struct
-    p.max_time_seconds = max_time_seconds;
+    // AANGEPAST: Gebruik Python::with_gil
+    let p = Python::with_gil(|py| {
+        let p_ref = py_params.borrow(py);
+        Params::new(
+            p_ref.gamma_target,
+            p_ref.stagnation_iter,
+            p_ref.max_iter,
+            p_ref.tenure_u,
+            p_ref.tenure_v,
+            p_ref.use_mcts,
+            p_ref.mcts_budget,
+            p_ref.mcts_exploration_const,
+            p_ref.mcts_max_depth,
+            p_ref.lns_repair_depth,
+            p_ref.max_time_seconds,
+            p_ref.k,
+            p_ref.runs,
+            p_ref.seed,
+        )
+    });
+    
+    let k_val = p.k.expect("Fixed-k mode requires a 'k' value in Params.");
 
     let mut best_sol_overall = Solution::new(&graph);
-    let mut is_timed_out_overall = false; // Vlag om te controleren of één van de runs is getimed out
+    let mut is_timed_out_overall = false;
 
-    for i in 0..runs {
-        let mut rng = StdRng::seed_from_u64(seed + i as u64);
-        // Roep solve_fixed_k aan en ontvang de timeout status
-        let (sol, timed_out_run) = restart::solve_fixed_k(&graph, k, &mut rng, &p); 
+    for i in 0..p.runs {
+        let mut rng = StdRng::seed_from_u64(p.seed + i as u64);
+        let (sol, timed_out_run) = restart::solve_fixed_k(&graph, k_val, &mut rng, &p);
         if sol.density() > best_sol_overall.density() {
             best_sol_overall = sol;
         }
         if timed_out_run {
-            is_timed_out_overall = true; 
-            // Optioneel: als je wilt stoppen na de eerste timeout, uncomment de volgende regel:
-            // break;
+            is_timed_out_overall = true;
         }
     }
 
@@ -84,60 +83,56 @@ fn solve_k_py(
         best_sol_overall.size(),
         best_sol_overall.edges(),
         best_sol_overall.density(),
-        is_timed_out_overall, // Geef de totale timeout status terug
+        is_timed_out_overall,
     ))
 }
 
 /// Python-binding voor de max-k oplosser.
 #[pyfunction]
-#[pyo3(signature = (
-    instance_path, gamma, seed, runs=1,
-    use_mcts=false, mcts_budget=100, mcts_uct=1.414, mcts_depth=5, lns_repair_depth=10,
-    max_time_seconds=0.0 // NIEUW: 0.0 betekent geen timeout
-))]
+#[pyo3(signature = (instance_path, py_params))]
 fn solve_max_py(
     instance_path: String,
-    gamma: f64,
-    seed: u64,
-    runs: usize,
-    use_mcts: bool,
-    mcts_budget: usize,
-    mcts_uct: f64,
-    mcts_depth: usize,
-    lns_repair_depth: usize,
-    max_time_seconds: f64, // NIEUWE parameter
-) -> PyResult<(usize, usize, f64, bool)> { // AANGEPAST retourtype
+    py_params: Py<Params>, // Ontvang het Params object
+) -> PyResult<(usize, usize, f64, bool)> {
     let file = File::open(&instance_path)
        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
     let graph = Graph::parse_dimacs(BufReader::new(file))
        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
-    let mut p = Params::default();
-    p.gamma_target = gamma;
-    if use_mcts {
-        p.enable_mcts(mcts_budget, mcts_uct, mcts_depth, lns_repair_depth);
-    }
-    // Geef de nieuwe max_time_seconds parameter door aan de Params struct
-    p.max_time_seconds = max_time_seconds;
-    
-    let mut best_sol_overall = Solution::new(&graph);
-    let mut is_timed_out_overall = false; // Vlag voor timeout
+    // AANGEPAST: Gebruik Python::with_gil
+    let p = Python::with_gil(|py| {
+        let p_ref = py_params.borrow(py);
+        Params::new(
+            p_ref.gamma_target,
+            p_ref.stagnation_iter,
+            p_ref.max_iter,
+            p_ref.tenure_u,
+            p_ref.tenure_v,
+            p_ref.use_mcts,
+            p_ref.mcts_budget,
+            p_ref.mcts_exploration_const,
+            p_ref.mcts_max_depth,
+            p_ref.lns_repair_depth,
+            p_ref.max_time_seconds,
+            p_ref.k,
+            p_ref.runs,
+            p_ref.seed,
+        )
+    });
 
-    for i in 0..runs {
-        let mut rng = StdRng::seed_from_u64(seed + i as u64);
-        // Roep solve_maxk aan en ontvang de timeout status
-        let (sol, timed_out_run) = maxk::solve_maxk(&graph, &mut rng, &p); 
-        // Voor max-k is het primaire doel de grootte, met dichtheid als tie-breaker.
+    let mut best_sol_overall = Solution::new(&graph);
+    let mut is_timed_out_overall = false;
+
+    for i in 0..p.runs {
+        let mut rng = StdRng::seed_from_u64(p.seed + i as u64);
+        let (sol, timed_out_run) = maxk::solve_maxk(&graph, &mut rng, &p);
         if sol.size() > best_sol_overall.size()
-            ||
-            (sol.size() == best_sol_overall.size() && sol.density() > best_sol_overall.density())
+            || (sol.size() == best_sol_overall.size() && sol.density() > best_sol_overall.density())
         {
             best_sol_overall = sol;
         }
         if timed_out_run {
             is_timed_out_overall = true;
-            // Optioneel: stop na eerste timeout
-            // break; 
         }
     }
 
@@ -145,7 +140,7 @@ fn solve_max_py(
         best_sol_overall.size(),
         best_sol_overall.edges(),
         best_sol_overall.density(),
-        is_timed_out_overall, // Geef de totale timeout status terug
+        is_timed_out_overall,
     ))
 }
 
@@ -164,7 +159,6 @@ fn parse_dimacs_py(instance_path: String) -> PyResult<(usize, usize)> {
 #[pymodule]
 fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Params>()?;
-    // Voeg de Params struct toe aan de Python module
     m.add_function(wrap_pyfunction!(solve_k_py, m)?)?;
     m.add_function(wrap_pyfunction!(solve_max_py, m)?)?;
     m.add_function(wrap_pyfunction!(parse_dimacs_py, m)?)?;

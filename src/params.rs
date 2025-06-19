@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 
 /// Alle afstembare besturingselementen voor TSQC en de MCTS-LNS uitbreiding.
 #[pyclass]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug)] // BELANGRIJK: Clone is al gedefinieerd, dus we kunnen .clone() gebruiken
 pub struct Params {
     #[pyo3(get, set)]
     pub gamma_target: f64,
@@ -29,16 +29,37 @@ pub struct Params {
     pub mcts_max_depth: usize,
     #[pyo3(get, set)]
     pub lns_repair_depth: usize,
-    // NIEUW VELD: Maximale looptijd in seconden voor een enkele run. 0.0 betekent geen limiet.
     #[pyo3(get, set)]
     pub max_time_seconds: f64,
+    #[pyo3(get, set)]
+    pub k: Option<usize>, // Target k voor fixed-k modus (Optioneel)
+    #[pyo3(get, set)]
+    pub runs: usize, // Aantal runs per instantie
+    #[pyo3(get, set)]
+    pub seed: u64, // Random seed
 }
 
 #[pymethods]
 impl Params {
     #[new]
+    #[pyo3(signature = (
+        gamma_target = 0.90,
+        stagnation_iter = 1_000,
+        max_iter = 100_000_000,
+        tenure_u = 1,
+        tenure_v = 1,
+        use_mcts = false,
+        mcts_budget = 100,
+        mcts_exploration_const = 1.414,
+        mcts_max_depth = 5,
+        lns_repair_depth = 10,
+        max_time_seconds = 0.0,
+        k = None,
+        runs = 1,
+        seed = 42,
+    ))]
     #[allow(clippy::too_many_arguments)]
-    fn new(
+    pub fn new(
         gamma_target: f64,
         stagnation_iter: usize,
         max_iter: usize,
@@ -49,8 +70,10 @@ impl Params {
         mcts_exploration_const: f64,
         mcts_max_depth: usize,
         lns_repair_depth: usize,
-        // NIEUWE PARAMETER VOOR CONSTRUCTOR
-        max_time_seconds: f64, 
+        max_time_seconds: f64,
+        k: Option<usize>,
+        runs: usize,
+        seed: u64,
     ) -> Self {
         Self {
             gamma_target,
@@ -63,14 +86,19 @@ impl Params {
             mcts_exploration_const,
             mcts_max_depth,
             lns_repair_depth,
-            // INITIALISATIE VAN NIEUWE PARAMETER
             max_time_seconds,
+            k,
+            runs,
+            seed,
         }
+    }
+
+    // NIEUW: Methode om een kopie te maken, blootgesteld aan Python
+    pub fn copy(&self) -> Self {
+        self.clone() // Gebruikt de automatisch afgeleide Clone-trait
     }
 }
 
-// CORRECTIE: De 'impl Default' is teruggezet voor intern Rust-gebruik,
-// zoals in `lib.rs`.
 impl Default for Params {
     fn default() -> Self {
         Params {
@@ -84,8 +112,10 @@ impl Default for Params {
             mcts_exploration_const: 1.414,
             mcts_max_depth: 5,
             lns_repair_depth: 10,
-            // NIEUWE DEFAULT WAARDE: 0.0 (geen timeout)
-            max_time_seconds: 0.0, 
+            max_time_seconds: 0.0,
+            k: None,
+            runs: 1,
+            seed: 42,
         }
     }
 }
